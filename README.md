@@ -1,4 +1,4 @@
-# 💧 SWAT Bharat
+# 🏞️ SWAT Bharat
 
 **Every SWAT input for any catchment in India, in one zip.**
 
