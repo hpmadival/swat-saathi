@@ -256,20 +256,20 @@ def read_window(url, bounds, bounds_crs="EPSG:4326"):
     from rasterio.errors import RasterioIOError
     from rasterio.warp import transform_bounds
     from rasterio.windows import Window, from_bounds
-    path = url if url.startswith("/vsicurl") else "/vsicurl/" + url
+    path = url if (url.startswith("/vsicurl") or os.path.exists(url)) else "/vsicurl/" + url
     try:
         with rasterio.Env(**GDAL_ENV), rasterio.open(path) as src:
             b = bounds if str(src.crs) == str(bounds_crs) else transform_bounds(bounds_crs, src.crs, *bounds,
                                                                                  densify_pts=21)
+            # whole cells only, written out by hand so it works with every rasterio version
             win = from_bounds(*b, transform=src.transform)
-            win = win.round_offsets("floor").round_lengths("ceil")
-            full = Window(0, 0, src.width, src.height)
-            try:
-                win = win.intersection(full)
-            except Exception:
+            c0 = max(int(math.floor(win.col_off)), 0)
+            r0 = max(int(math.floor(win.row_off)), 0)
+            c1 = min(int(math.ceil(win.col_off + win.width)), src.width)
+            r1 = min(int(math.ceil(win.row_off + win.height)), src.height)
+            if c1 <= c0 or r1 <= r0:
                 return None
-            if win.width <= 0 or win.height <= 0:
-                return None
+            win = Window(c0, r0, c1 - c0, r1 - r0)
             arr = src.read(1, window=win)
             return arr, src.window_transform(win), src.crs, src.nodata
     except RasterioIOError as err:

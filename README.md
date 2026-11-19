@@ -6,6 +6,26 @@ A free web app that prepares ready-to-load inputs for **SWAT 2012** (ArcSWAT, QS
 **SWAT+** (QSWAT+, SWAT+ Editor). Upload your watershed or subbasins, or drop a point, choose a
 safety margin, press one button, and download one zip.
 
+## Saving you time
+
+- **Trace a catchment from an outlet point:** drop your gauge or outlet on the map and the app traces
+  everything that drains to it (pyflwdir, Deltares): first at 90 m to find the extent (the search square
+  grows until the whole catchment fits), then again at 30 m for a sharp boundary. The point is moved
+  onto the main river nearby.
+- **Health check before SWAT:** empty DEM or land use cells, very flat land (burn-in advice), large water
+  bodies, tiny soil types, missing weather days, an incomplete weather generator, a short record, and
+  whether the traced outlet moved far. Each item says OK, Check or Fix, and what to do.
+- **Suggested settings:** a stream threshold for about 20 to 40 subbasins; land use, soil and slope HRU
+  thresholds, each with a table of what every threshold would drop; slope class breaks (ready to type
+  into QSWAT); and whether to use elevation bands, how many, with TLAPS and PLAPS (PLAPS fitted from the
+  IMD rainfall stations when there is a clear link between height and rain).
+- **River lines for burn-in:** rivers (and optionally streams and canals) from OpenStreetMap,
+  cut to the study area, as `Maps/rivers.shp`, ready for QSWAT / ArcSWAT "burn-in".
+- **Methods paragraph:** a ready-to-paste paragraph describing exactly the data and settings used,
+  with the full reference list (`Report/Methods paragraph.txt`, also shown in the app).
+- **Data report (PDF):** three A4 pages with the elevation, land use and soil maps, land use and soil
+  tables, the monthly climate chart, the methods paragraph and references.
+
 ## Your study area
 
 - **Shapes** (watershed, subbasins; any coordinate system): a margin of a few km all round
@@ -71,7 +91,23 @@ in the study area, or one area-averaged station per shape (for subbasins). Missi
 | `swat_weather.py` | Weather stations, weather generator, SWAT 2012 and SWAT+ weather files |
 | `power_tools.py` | NASA POWER and station elevations |
 | `imd_tools.py` | The IMD engine, the same as in the [IMD Data Puller](https://github.com/hpmadival/imd-data-puller) |
+| `catchment.py` | Tracing a catchment from an outlet point |
+| `rivers.py` | River lines from OpenStreetMap |
+| `report.py` | Methods paragraph and PDF data report |
+| `setup_advice.py` | Health check and suggested SWAT settings |
 | `bundle.py` | The README and the zip |
+
+## Look and speed
+
+- Light, Dark or System theme switch at the top right (the same as the IMD Data Puller), with a dark
+  base map in dark mode.
+- Heavy libraries (imdlib, rasterio, pyflwdir, matplotlib) load only when they are needed, so the
+  first page opens in about 1.5 seconds once the app is awake.
+- **Keep it awake:** Streamlit's free hosting puts an app to sleep after about 12 hours without
+  visitors, and the next visitor then waits a minute or two. The file
+  `.github/workflows/keep-awake.yml` is a small GitHub robot that opens the app every 6 hours.
+  Put your app's real link on its `APP_URL` line. If you upload through the GitHub website, create
+  the file with exactly that path (type `.github/workflows/keep-awake.yml` as the file name).
 
 ## Running it
 
@@ -94,4 +130,6 @@ streamlit run app.py
 - Saxton, K.E. and Rawls, W.J. (2006). *SSSA Journal* 70, 1569-1578.
 - Pai, D.S. et al. (2014). *Mausam* 65(1), 1-18. Srivastava, A.K. et al. (2009). *Atmos. Sci. Lett.* 10, 249-254.
 - NASA Langley Research Center POWER Project (https://power.larc.nasa.gov).
+- OpenStreetMap contributors (river lines, ODbL licence).
+- Eilander, D. et al. (2021). pyflwdir. *HESS* 25, 5287-5313.
 - Madival, H.P. (2026). IMD Data Puller. https://doi.org/10.5281/zenodo.24352511

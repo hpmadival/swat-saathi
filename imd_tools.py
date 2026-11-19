@@ -30,14 +30,26 @@ import requests
 import shapely
 from shapely.geometry import Point, box
 
-try:  # use imdlib's download addresses so an imdlib update also updates these
-    from imdlib.util import ARCHIVE_URLS
-except Exception:  # pragma: no cover - fallback if imdlib changes its layout
-    ARCHIVE_URLS = {
-        "rain": ("https://imdpune.gov.in/cmpg/Griddata/rainfall.php", "rain"),
-        "tmax": ("https://imdpune.gov.in/cmpg/Griddata/maxtemp.php", "maxtemp"),
-        "tmin": ("https://imdpune.gov.in/cmpg/Griddata/mintemp.php", "mintemp"),
-    }
+# IMD's download addresses (the same ones imdlib uses). imdlib itself is only loaded
+# when a download is needed, because importing it takes over a second at start-up.
+_DEFAULT_URLS = {
+    "rain": ("https://imdpune.gov.in/cmpg/Griddata/rainfall.php", "rain"),
+    "tmax": ("https://imdpune.gov.in/cmpg/Griddata/maxtemp.php", "maxtemp"),
+    "tmin": ("https://imdpune.gov.in/cmpg/Griddata/mintemp.php", "mintemp"),
+}
+_urls_cache = None
+
+
+def archive_urls():
+    """IMD's download addresses: imdlib's current ones if available, else the built-in copy."""
+    global _urls_cache
+    if _urls_cache is None:
+        try:
+            from imdlib.util import ARCHIVE_URLS as found
+            _urls_cache = {k: found[k] for k in _DEFAULT_URLS}
+        except Exception:
+            _urls_cache = dict(_DEFAULT_URLS)
+    return _urls_cache
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +189,7 @@ def download_year(var, year, data_dir, timeout=300, tries=3, backup_dir=None):
         shutil.copyfile(grd_path(backup_dir, var, year), path + ".part")
         os.replace(path + ".part", path)
         return "copied from backup"
-    url, form_key = ARCHIVE_URLS[var]
+    url, form_key = archive_urls()[var]
     expected = VARIABLES[var]["grid"].file_size(days_in_year(year))
     last_error = None
     for _ in range(tries):
@@ -987,6 +999,13 @@ Grid cells used.csv    Every IMD grid cell used, its position, how much of it li
 Long-term value per grid cell.csv
                        The long-term average of each cell, to see how rainfall or
                        temperature varies across a catchment.
+Design rainfall.csv    Rainfall expected once in 2, 5, 10, 25, 50 and 100 years, for
+                       1, 2, 3 and 5 days in a row (Gumbel and GEV curves, L-moments).
+Yearly largest rainfall.csv
+                       The largest 1, 2, 3 and 5-day rainfall of each complete year.
+Drought index (SPI).csv
+                       Standardised Precipitation Index at 1, 3, 6 and 12 months.
+Drought periods.csv    Runs of months with 3-month SPI of -1 or less.
 Settings used.txt      Exactly what was asked for, so the pull can be repeated,
                        plus any cautions about the data.
 Grid cell daily values/ (optional) Daily values of each grid cell, before averaging.
@@ -1027,7 +1046,9 @@ Dates
 
 def all_tables(res):
     """Work out every summary table once, for the screen and for the downloads."""
+    import analysis as A
     monthly, yearly, indices, means = [], [], [], []
+    design, maxima, spis, droughts = [], [], [], []
     for s in res.sites:
         df = res.daily[s.name]
         m = monthly_table(df); m.insert(0, "Site", s.name); monthly.append(m)
@@ -1035,6 +1056,19 @@ def all_tables(res):
         ri = rain_indices(df)
         if len(ri):
             ri.insert(0, "Site", s.name); indices.append(ri)
+        if VARIABLES["rain"]["column"] in df:
+            dr, _ = A.design_rainfall(df)
+            if len(dr):
+                dr.insert(0, "Site", s.name); design.append(dr)
+            am = A.annual_maxima(df)
+            if len(am):
+                am.insert(0, "Site", s.name); maxima.append(am)
+            sp, _ = A.spi(df)
+            if len(sp):
+                ev = A.drought_periods(sp, 3)
+                sp.insert(0, "Site", s.name); spis.append(sp)
+                if len(ev):
+                    ev.insert(0, "Site", s.name); droughts.append(ev)
     for (site, var), cm in res.cell_means.items():
         t = cm.copy()
         t.insert(0, "Variable", VARIABLES[var]["name"]); t.insert(0, "Site", site)
@@ -1050,6 +1084,10 @@ def all_tables(res):
         "Trends": trend_table(res),
         "Grid cells used": res.cells.round(5) if res.cells is not None else pd.DataFrame(),
         "Long-term value per grid cell": pd.concat(means, ignore_index=True) if means else pd.DataFrame(),
+        "Design rainfall": pd.concat(design, ignore_index=True) if design else pd.DataFrame(),
+        "Yearly largest rainfall": pd.concat(maxima, ignore_index=True) if maxima else pd.DataFrame(),
+        "Drought index (SPI)": pd.concat(spis, ignore_index=True) if spis else pd.DataFrame(),
+        "Drought periods": pd.concat(droughts, ignore_index=True) if droughts else pd.DataFrame(),
     }
 
 

@@ -30,12 +30,16 @@ from shapely.geometry import Point, box, mapping, shape
 from streamlit_folium import st_folium
 
 import bundle as B
+import catchment as C
 import imd_tools as T
+import report as R
+import rivers as RV
+import setup_advice as SA
 import study_area as A
 import swat_maps as M
 import swat_weather as S
 
-st.set_page_config(page_title="SWAT Bharat", page_icon="💧", layout="wide",
+st.set_page_config(page_title="SWAT Bharat", page_icon="🏞️", layout="wide",
                    initial_sidebar_state="collapsed")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,18 +58,20 @@ ss.setdefault("sa_shape_km", 5.0)
 ss.setdefault("sa_point_km", 10.0)
 ss.setdefault("sa_point_shape", "Circle")
 ss.setdefault("sa_shape_style", "Follow the outline")
+ss.setdefault("traced_obj", {})      # catchment name -> Traced result (for the health check)
+ss.setdefault("traced", {})          # catchment name -> how it was traced (for the methods text)
 
 st.markdown("""
 <style>
-#MainMenu, footer, header[data-testid="stHeader"] {visibility: hidden; height: 0;}
-div[data-testid="stToolbar"] {display: none;}
+footer {visibility: hidden; height: 0;}
+header[data-testid="stHeader"] {background: transparent;}
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1500px;}
-div[data-testid="stMetric"] {background: #f5f8fc; border: 1px solid #e3e9f2; border-radius: 10px;
-                             padding: 10px 14px;}
-div[data-testid="stMetricLabel"] p {font-size: 0.85rem; color: #52606d;}
-.panel-title {font-size: 0.8rem; letter-spacing: .04em; color: #6b7785; margin: 0.6rem 0 0.1rem 0;}
-.hint {color: #52606d; font-size: 0.92rem; margin-bottom: 0.3rem;}
-.tagline {font-size: 1.02rem; color: #3d4652; margin-top: -0.6rem;}
+div[data-testid="stMetric"] {background: rgba(42,120,214,0.07); border: 1px solid rgba(128,140,155,0.28);
+                             border-radius: 10px; padding: 10px 14px;}
+div[data-testid="stMetricLabel"] p {font-size: 0.85rem; opacity: 0.75;}
+.panel-title {font-size: 0.8rem; letter-spacing: .04em; opacity: 0.65; margin: 0.6rem 0 0.1rem 0;}
+.hint {font-size: 0.92rem; opacity: 0.8; margin-bottom: 0.3rem;}
+.tagline {font-size: 1.02rem; opacity: 0.9; margin-top: -0.6rem;}
 </style>""", unsafe_allow_html=True)
 
 
@@ -103,9 +109,24 @@ def area_of(wkb):
 
 @st.cache_data(show_spinner=False, max_entries=200)
 def study_area_cached(places_json, shape_km, point_km, point_shape, shape_style):
-    sites = [T.Site(p["name"], shape(p["geojson"])) for p in json.loads(places_json)]
+    # an outlet whose catchment was traced needs no circle of its own: the catchment's margin covers it
+    sites = [T.Site(p["name"], shape(p["geojson"])) for p in json.loads(places_json) if not p.get("outlet")]
     area, epsg = A.study_area(sites, shape_km, point_km, point_shape, shape_style)
     return (area.wkb if area is not None else None), epsg
+
+
+def dark_tiles():
+    return folium.TileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        attr="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ", name="Dark map", max_zoom=16)
+
+
+def dark_mode():
+    """True when the visitor is viewing the app in dark mode."""
+    try:
+        return (st.context.theme.type or "light") == "dark"
+    except Exception:
+        return False
 
 
 def current_sites():
@@ -180,15 +201,47 @@ if ss.pop("load_example", False):
 # Page header
 # ---------------------------------------------------------------------------
 head_l, head_r = st.columns([3, 1])
-head_l.markdown("## 💧 SWAT Bharat")
+head_l.markdown("## 🏞️ SWAT Bharat")
 head_l.markdown("<div class='tagline'>Every SWAT input for any catchment in India, in one zip.</div>"
-                "<div class='hint'>Elevation, land use and soil maps with lookup tables, a ready soil database, "
-                "and IMD + NASA POWER weather with the weather generator, for <b>SWAT 2012</b> (ArcSWAT, QSWAT) "
-                "and <b>SWAT+</b> (QSWAT+, SWAT+ Editor).</div>", unsafe_allow_html=True)
+                "<div class='hint'>Trace your catchment from an outlet, then get elevation, land use and soil maps with "
+                "lookup tables, a ready soil database, river lines for burn-in, IMD + NASA POWER weather with the "
+                "weather generator, and a PDF report with a ready methods paragraph, for <b>SWAT 2012</b> "
+                "(ArcSWAT, QSWAT) and <b>SWAT+</b> (QSWAT+, SWAT+ Editor).</div>", unsafe_allow_html=True)
 if head_r.button("✨ Try an example", width="stretch",
                  help="Loads a sample area in the upper Netravati basin and a gauge point, with the last 10 years."):
     ss.load_example = True
     st.rerun()
+THEMES = {"☀️ Light": "Light", "🌙 Dark": "Dark", "💻 System": "System"}
+if "theme_choice" not in ss:
+    ss.theme_choice = "🌙 Dark" if dark_mode() else "☀️ Light"
+    ss.theme_applied = ss.theme_choice
+choice = head_r.segmented_control("Theme", list(THEMES), key="theme_choice", width="stretch",
+                                  label_visibility="collapsed",
+                                  help="Light, dark, or follow your computer's setting (System).")
+if choice and choice != ss.get("theme_applied"):
+    ss.theme_applied = choice
+    # Streamlit has no command to change the theme, so this presses its own theme button
+    # (in the menu) for the visitor, then closes the menu again. Same as the IMD Data Puller.
+    st.html(f"""<script>
+    (async () => {{
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      const doc = document;
+      const menuBtn = doc.querySelector('[data-testid="stMainMenu"] button') || doc.querySelector('[data-testid="stMainMenu"]');
+      if (!menuBtn) return;
+      const item = () => doc.querySelector('[data-testid="stMainMenuItem-theme-{THEMES[choice]}"]');
+      const isOpen = () => !!doc.querySelector('[data-testid^="stMainMenuItem"]');
+      if (!isOpen()) menuBtn.click();
+      for (let i = 0; i < 40 && !item(); i++) await wait(25);
+      if (item()) item().click();
+      await wait(60);
+      for (let i = 0; i < 5 && isOpen(); i++) {{
+        const el = doc.querySelector('[data-testid^="stMainMenuItem"]') || doc.body;
+        el.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true}}));
+        await wait(60);
+        if (isOpen()) {{ menuBtn.click(); await wait(80); }}
+      }}
+    }})();
+    </script>""", unsafe_allow_javascript=True)
 
 panel, mapcol = st.columns([1, 2.6], gap="medium")
 data_dir_default = os.environ.get("IMD_DATA_DIR", "imd-data")
@@ -204,6 +257,9 @@ with panel:
         want_dem = st.checkbox("Elevation map (DEM)", value=True, key="f_dem")
         want_lu = st.checkbox("Land use map + lookup table", value=True, key="f_lu")
         want_soil = st.checkbox("Soil map + lookup table + soil database (usersoil)", value=True, key="f_soil")
+        want_rivers = st.checkbox("River lines for DEM burn-in (OpenStreetMap)", value=True, key="f_rivers",
+                                  help="Real river lines that QSWAT / ArcSWAT can burn into the DEM, so the "
+                                       "streams follow the real rivers. Most useful in flat areas.")
         want_weather = st.checkbox("Weather files + weather generator", value=True, key="f_weather")
         res = st.radio("Map cell size", [30, 90], horizontal=True, key="f_res",
                        format_func=lambda r: f"{r} m" + (" (detailed)" if r == 30 else " (big basins)"),
@@ -240,6 +296,9 @@ with panel:
                                      format_func=M.TREE_CHOICES.get, key="f_tree")
             urban_code = st.selectbox("SWAT code for built-up land", list(M.URBAN_CHOICES),
                                       format_func=M.URBAN_CHOICES.get, key="f_urban")
+            river_kinds = st.multiselect("River lines to include", list(RV.KINDS), default=["river"],
+                                         format_func=RV.KINDS.get, key="f_river_kinds",
+                                         help="Streams and canals add detail but many are small or man-made.")
             lu_year = st.radio("Land use year (ESA WorldCover)", [2021, 2020], horizontal=True, key="f_lu_year")
             blank = st.checkbox("Blank out map cells outside the study area", value=True, key="f_blank",
                                 help="Untick to keep the full rectangle around the study area.")
@@ -263,15 +322,18 @@ def build_map(sites, area, grid_var, base):
                    min_zoom=4, prefer_canvas=True)
     if base == "Light map":
         folium.TileLayer("Esri.WorldGrayCanvas", name="Light map").add_to(m)
+    elif base == "Dark map":
+        dark_tiles().add_to(m)
     elif base == "Satellite":
         folium.TileLayer("Esri.WorldImagery", name="Satellite").add_to(m)
     else:
         folium.TileLayer("OpenStreetMap", name="Street map").add_to(m)
-    line = "#ffffff" if base == "Satellite" else "#8a8f98"
+    on_dark = base in ("Satellite", "Dark map")
+    line = "#ffffff" if base == "Satellite" else ("#aab2bd" if base == "Dark map" else "#8a8f98")
     folium.GeoJson(grids[grid_var], name="IMD grid", interactive=False,
                    style_function=lambda _: {"color": line, "weight": 0.5, "opacity": 0.45}).add_to(m)
     folium.GeoJson(india, name="India boundary", interactive=False,
-                   style_function=lambda _: {"color": "#3d4652" if base != "Satellite" else "#ffffff",
+                   style_function=lambda _: {"color": "#e6e9ee" if on_dark else "#3d4652",
                                              "weight": 1.3, "fill": False}).add_to(m)
     if area is not None:
         gj = cells_geojson(area, grid_var)
@@ -327,11 +389,13 @@ def map_section():
         b4.radio("Point area shape", ["Circle", "Square"], horizontal=True, key="sa_point_shape")
 
     area, epsg = current_area()
-    t1, t2 = st.columns([1.4, 1])
+    t1, t2 = st.columns([1, 1.35])
     grid_label = t1.radio("Grid", ["Rainfall grid (0.25°)", "Temperature grid (1°)"], horizontal=True,
                           key="grid_choice", label_visibility="collapsed")
-    base = t2.radio("Base map", ["Light map", "Street map", "Satellite"], horizontal=True,
-                    key="base_choice", label_visibility="collapsed")
+    bases = ["Light map", "Dark map", "Street map", "Satellite"]
+    if "base_choice" not in ss:
+        ss.base_choice = "Dark map" if dark_mode() else "Light map"
+    base = t2.radio("Base map", bases, horizontal=True, key="base_choice", label_visibility="collapsed")
     grid_var = "rain" if grid_label.startswith("Rain") else "tmax"
     if not sites:
         st.markdown("<div class='hint'>Upload your watershed or subbasins below (the best way), or use the map "
@@ -374,7 +438,7 @@ def map_section():
             keep = []
             for p, (_, row) in zip(ss.places, edited.iterrows()):
                 if not row["Remove"]:
-                    keep.append({"name": str(row["Name"]).strip() or p["name"], "geojson": p["geojson"]})
+                    keep.append({**p, "name": str(row["Name"]).strip() or p["name"]})
             ss.places = keep
             ss.map_version += 1
             refresh_map_area()
@@ -421,6 +485,53 @@ def map_section():
                     add_place("Watershed", shapely.union_all([s.geometry for s in new_sites]))
                     refresh_map_area()
 
+    points = [s for s in sites if s.is_point]
+    with st.expander("🌊 Trace a catchment from an outlet point", expanded=bool(points) and not
+                     any(not s.is_point for s in sites)):
+        st.markdown("<div class='hint'>Add your outlet or gauge as a point (map tool 📍 or typed below), "
+                    "then trace everything that drains to it from the Copernicus 90 m DEM. The point is moved "
+                    "onto the biggest river nearby.</div>", unsafe_allow_html=True)
+        if not points:
+            st.info("Add a point first.")
+        else:
+            c1, c2, c3, c4 = st.columns([1.3, 1, 1, 0.9])
+            pick = c1.selectbox("Outlet point", [s.name for s in points], key="trace_pick")
+            snap_m = c2.number_input("Look for the river within (m)", 90, 10000, 1000, step=100, key="trace_snap",
+                                     help="The point moves to the cell with the largest drainage area within "
+                                          "this distance. Make it bigger if your point is far from the river.")
+            max_km = c3.number_input("Largest search square (km)", 50, 400, 300, step=50, key="trace_max",
+                                     help="The search starts with a 50 km square and doubles until the whole "
+                                          "catchment fits, up to this size.")
+            fine = c4.checkbox("Sharp 30 m boundary", value=True, key="trace_fine",
+                               help="Finds the catchment quickly at 90 m, then re-traces it at 30 m for a sharper "
+                                    "outline. Very big catchments stay at 90 m.")
+            if st.button("Trace the catchment", type="primary", width="stretch"):
+                pt = next(s for s in points if s.name == pick)
+                with st.spinner("Downloading the DEM and tracing the flow (one to three minutes)..."):
+                    try:
+                        tr = C.trace_catchment(pt.geometry.y, pt.geometry.x, max_km=max_km / 2,
+                                               snap_m=float(snap_m), fine=fine)
+                        name = f"Catchment of {pick}"
+                        for p in ss.places:                      # move the point onto the river
+                            if p["name"] == pick:
+                                p["geojson"] = mapping(tr.outlet)
+                                p["outlet"] = True
+                        add_place(name, tr.polygon)
+                        ss.traced_obj[name] = tr
+                        ss.traced[name] = (f"the outlet was moved {tr.moved_m:,.0f} m onto the main river and the "
+                                           f"traced catchment covers {tr.area_km2:,.0f} km².")
+                        ss.trace_msg = ("success" if not tr.cut_off else "warning",
+                                        f"Traced {tr.area_km2:,.0f} km² at {tr.res} m. The outlet moved "
+                                        f"{tr.moved_m:,.0f} m onto the river. " + tr.note + (" The catchment still touches the edge of the "
+                                        "largest search square, so it may be cut off: raise the size or upload "
+                                        "the boundary instead." if tr.cut_off else ""))
+                        refresh_map_area()
+                    except Exception as err:
+                        st.error(f"Could not trace the catchment: {err}")
+        msg = ss.pop("trace_msg", None)
+        if msg:
+            getattr(st, msg[0])(msg[1])
+
     with st.expander("Add a point by typing its coordinates (e.g. an outlet or gauge)"):
         c1, c2, c3, c4 = st.columns([1.3, 1, 1, 0.7])
         pname = c1.text_input("Name", placeholder="e.g. Bantwal gauge")
@@ -452,7 +563,7 @@ if submitted:
     problems = []
     if not sites:
         problems.append("Add your watershed, subbasins or a point on the map first.")
-    if not (want_dem or want_lu or want_soil or want_weather):
+    if not (want_dem or want_lu or want_soil or want_weather or want_rivers):
         problems.append("Tick at least one thing to make.")
     if want_weather and not (want_2012 or want_plus):
         problems.append("Tick SWAT 2012, SWAT+, or both.")
@@ -478,6 +589,18 @@ if submitted:
         files, ms, ws, errors = {}, None, None, []
         try:
             n_parts = int(want_dem or want_lu or want_soil) + int(want_weather)
+            river_lines, river_problem = None, None
+            if want_rivers:
+                bar.progress(0.01, text="River lines from OpenStreetMap")
+                try:
+                    river_lines = RV.fetch_rivers(area, tuple(river_kinds or ["river"]))
+                    if river_lines:
+                        for f, b in RV.rivers_shapefile(river_lines, epsg).items():
+                            files[f"Maps/{f}"] = b
+                    else:
+                        river_problem = "No river lines are mapped in OpenStreetMap for this area."
+                except RV.RiverError as err:
+                    river_problem = str(err)
             done = 0
             if want_dem or want_lu or want_soil:
                 bar.progress(0.02, text="Making the maps (only the part of each map you need is downloaded)")
@@ -505,11 +628,35 @@ if submitted:
                          + f". Margin: {ss.sa_shape_km:g} km around shapes ({ss.sa_shape_style.lower()}), "
                          f"{ss.sa_point_km:g} km {ss.sa_point_shape.lower()} around points.")
             text = B.readme(area_text, maps=ms, weather=S.weather_summary(ws) if ws else None)
+            shapes_ = [s for s in sites if not s.is_point]
+            pts_ = [s for s in sites if s.is_point]
+            outlets = {p["name"] for p in ss.places if p.get("outlet")}
+            pts_ = [s for s in pts_ if s.name not in outlets]
+            margin = " and ".join(
+                ([f"a {ss.sa_shape_km:g} km margin around the boundary"
+                  + (" (as a rectangle)" if ss.sa_shape_style == "Rectangle" else "")] if shapes_ else [])
+                + ([f"a {ss.sa_point_km:g} km {ss.sa_point_shape.lower()} around each point"] if pts_ else []))
+            traced = [v for k, v in ss.traced.items() if k in {s.name for s in sites}]
+            info = {"area_km2": km2, "epsg": epsg, "res": int(res), "lu_year": int(lu_year),
+                    "places": f"{len(sites)} place{'s' if len(sites) > 1 else ''} ({', '.join(s.name for s in sites)})",
+                    "margin": margin or "no margin", "traced": traced[0] if traced else None,
+                    "rivers": len(river_lines) if river_lines else None,
+                    "traced_res": next((t.res for k, t in ss.traced_obj.items() if k in {s.name for s in sites}), 90)}
+            bar.progress(0.99, text="Checking the data and working out suggestions")
+            tr_obj = next((t for k, t in ss.traced_obj.items() if k in {s.name for s in sites}), None)
+            adv = SA.build_advice(ms, ws, sites, river_lines if want_rivers else None, tr_obj)
+            files["Report/Setup suggestions.txt"] = SA.advice_text(adv)
+            files["Report/Health check.csv"] = adv["health"].to_csv(index=False)
+            bar.progress(1.0, text="Writing the data report")
+            pdf = R.pdf_report(info, sites, area, ms, ws, river_lines, adv)
+            files["Report/SWAT Bharat data report.pdf"] = pdf
+            files["Report/Methods paragraph.txt"] = R.methods_file(info, ms, ws)
             ss.result = {"ms": ms, "ws": ws, "zip": B.build_zip(files, text), "km2": km2,
                          "previews": {k: M.preview_png(ms, k) for k in ("dem", "landuse", "soil")
                                       if ms is not None and getattr(ms, k) is not None},
                          "overlays": M.overlay_layers(ms) if ms is not None else {},
-                         "area": area, "sites": sites}
+                         "area": area, "sites": sites, "rivers": river_lines, "river_problem": river_problem,
+                         "pdf": pdf, "methods": R.methods_text(info, ms, ws), "advice": adv}
             bar.empty()
         except Exception as err:
             bar.empty()
@@ -520,11 +667,16 @@ if submitted:
 # Results
 # ---------------------------------------------------------------------------
 def stations_map(ws):
-    m = folium.Map(tiles="Esri.WorldGrayCanvas", control_scale=True, prefer_canvas=True)
+    m = folium.Map(tiles=None, control_scale=True, prefer_canvas=True)
+    if dark_mode():
+        dark_tiles().add_to(m)
+    else:
+        folium.TileLayer("Esri.WorldGrayCanvas", name="Light map").add_to(m)
     for s in ws.imd.sites:
         if not s.is_point:
             folium.GeoJson(mapping(s.geometry), tooltip=s.name, interactive=False,
-                           style_function=lambda _: {"color": "#3d4652", "weight": 1.6,
+                           style_function=lambda _: {"color": "#e6e9ee" if dark_mode() else "#3d4652",
+                                                     "weight": 1.6,
                                                      "fillOpacity": 0.03}).add_to(m)
     for kind, label, r in [("pcp", "Rainfall stations", 5),
                            ("tmp", "Temperature (and humidity, solar, wind) stations", 9)]:
@@ -546,7 +698,10 @@ def viewer_map(r):
     ws, area = r["ws"], r["area"]
     m = folium.Map(tiles=None, control_scale=True, prefer_canvas=True)
     folium.TileLayer("Esri.WorldImagery", name="Satellite").add_to(m)
-    folium.TileLayer("Esri.WorldGrayCanvas", name="Light map").add_to(m)
+    if dark_mode():
+        dark_tiles().add_to(m)
+    else:
+        folium.TileLayer("Esri.WorldGrayCanvas", name="Light map").add_to(m)
     folium.TileLayer("OpenStreetMap", name="Street map").add_to(m)
     labels = {"dem": "Elevation (DEM)", "landuse": "Land use", "soil": "Soil types"}
     first = next(iter(r["overlays"]), None)
@@ -556,6 +711,12 @@ def viewer_map(r):
     folium.GeoJson(mapping(area), name="Study area (with buffer)",
                    style_function=lambda _: {"color": "#ffffff", "weight": 2.4, "dashArray": "7 5",
                                              "fill": False}).add_to(m)
+    if r.get("rivers"):
+        fg = folium.FeatureGroup(name="River lines (OpenStreetMap)")
+        for g, kind, nm in r["rivers"]:
+            folium.PolyLine([(y, x) for x, y in g.coords], color="#4fc3f7", weight=2 if kind == "river" else 1,
+                            tooltip=nm or kind.capitalize()).add_to(fg)
+        fg.add_to(m)
     places = folium.FeatureGroup(name="Your places")
     for s in r["sites"]:
         if s.is_point:
@@ -611,6 +772,76 @@ def landuse_legend(lk):
     return f"<div style='font-size:0.88rem'>{rows}</div>"
 
 
+def advice_section(adv):
+    h = adv["health"]
+    n_fix, n_check = int((h["Status"] == "Fix").sum()), int((h["Status"] == "Check").sum())
+    if n_fix:
+        st.error(f"{n_fix} thing(s) to fix and {n_check} to check before SWAT.")
+    elif n_check:
+        st.warning(f"Nothing to fix; {n_check} thing(s) worth a look.")
+    else:
+        st.success("Everything looks good.")
+    icon = {"OK": "✅", "Check": "⚠️", "Fix": "❌"}
+    show = h.copy()
+    show["Status"] = show["Status"].map(lambda x: f"{icon.get(x, '')} {x}")
+    st.dataframe(show, hide_index=True, width="stretch")
+
+    st.markdown("#### Suggested settings")
+    if "stream_km2" in adv:
+        st.markdown(f"**Stream threshold (watershed delineation):** about **{adv['stream_km2']:g} km²**, which "
+                    f"gives roughly 20 to 40 subbasins for this {adv['catchment_km2']:,.0f} km² catchment. "
+                    f"Smaller gives more subbasins and more detail; bigger gives fewer.")
+    hru = adv.get("hru", {})
+    if hru:
+        st.markdown("**HRU thresholds** (QSWAT / ArcSWAT 'Multiple HRUs'). SWAT drops land uses, soils and slope "
+                    "classes smaller than these percentages and gives their area to the others. Each suggestion "
+                    "moves at most 5% of the catchment. SWAT applies them inside each subbasin, so treat them "
+                    "as a starting point.")
+        cols = st.columns(len(hru))
+        labels = {"landuse": "Land use", "soil": "Soil", "slope": "Slope"}
+        for col, (k, v) in zip(cols, hru.items()):
+            col.metric(f"{labels[k]} threshold", f"{v['pick']}%")
+            if v.get("exempt"):
+                col.caption("Keep even if small (exempt): " + ", ".join(v["exempt"]))
+        for k, v in hru.items():
+            with st.expander(f"What each {labels[k].lower()} threshold would drop"):
+                st.dataframe(v["table"], hide_index=True, width="stretch")
+        if "slope" in hru:
+            sc = hru["slope"]["classes"]
+            st.markdown(f"**Slope classes:** breaks at **{', '.join(f'{b:g}%' for b in sc['breaks'])}** "
+                        f"(type `{sc['qswat']}` in QSWAT). Median slope {sc['median']:.1f}%; 90% of the land is "
+                        f"below {sc['p90']:.1f}%. Each class holds a fair share of the catchment:")
+            st.dataframe(sc["table"], hide_index=True)
+    e = adv.get("elevation")
+    if e:
+        if e["use_bands"]:
+            st.markdown(f"**Elevation bands: yes, {e['bands']} bands.** The catchment rises from "
+                        f"{e['lowest']:,.0f} m to {e['highest']:,.0f} m ({e['relief']:,.0f} m of relief), so "
+                        f"temperature and rain change with height. Set **TLAPS = {e['tlaps']} °C/km** "
+                        f"({e['tlaps_note']}) and **PLAPS = {e['plaps']:g} mm/km** ({e['plaps_note']}).")
+        else:
+            st.markdown(f"**Elevation bands: not needed.** The relief is only {e['relief']:,.0f} m "
+                        f"({e['lowest']:,.0f} to {e['highest']:,.0f} m).")
+    st.caption("All of this is also in the zip (Report/Setup suggestions.txt, Report/Health check.csv) and in "
+               "the PDF report.")
+
+
+def tidy_problems(problems):
+    """Many 'could not download year X' lines become one short line."""
+    failed = [p for p in problems if p.startswith("Could not download")]
+    rest = [p for p in problems if not p.startswith("Could not download")]
+    if len(failed) > 2:
+        import re
+        years = sorted({int(y) for p in failed for y in re.findall(r"for (\d{4})", p)})
+        span = f"{years[0]} to {years[-1]}" if years else ""
+        rest.insert(0, f"{len(failed)} yearly IMD files could not be downloaded ({span}). IMD's server is "
+                       f"sometimes busy: press the button again later and only the missing years will be "
+                       f"fetched. Those days are -99 in the files for now.")
+    else:
+        rest = failed + rest
+    return rest
+
+
 @st.fragment
 def results_section():
     r = ss.result
@@ -623,6 +854,8 @@ def results_section():
     d1.download_button(f"⬇️ Download the zip ({len(r['zip']) / 1e6:.1f} MB)", r["zip"],
                        file_name="SWAT Bharat inputs.zip", mime="application/zip", type="primary",
                        width="stretch")
+    d1.download_button("📄 Download the data report (PDF)", r["pdf"], file_name="SWAT Bharat data report.pdf",
+                       mime="application/pdf", width="stretch")
     d2.markdown("<div class='hint'>The zip has a README with step-by-step loading instructions for QSWAT, "
                 "QSWAT+, ArcSWAT and SWAT+ Editor. Unzip it to a short folder path with no spaces.</div>",
                 unsafe_allow_html=True)
@@ -639,18 +872,30 @@ def results_section():
         c[4].metric("Rain / temperature stations", f"{len(ws.stations.get('pcp', []))} / "
                                                    f"{len(ws.stations.get('tmp', []))}")
 
-    for p in (ms.problems if ms else []) + (ws.problems if ws else []):
+    if r.get("river_problem"):
+        st.warning("River lines: " + r["river_problem"])
+    for p in tidy_problems((ms.problems if ms else []) + (ws.problems if ws else [])):
         st.warning(p)
     for n in (ws.notes if ws else []):
         st.info(n)
 
-    names = ["Map viewer"]
+    names = ["Map viewer", "Health check and setup tips"]
     if ms is not None:
         names += ["Maps", "Soil types"] if ms.soil_units is not None else ["Maps"]
     if ws is not None:
         names += ["Weather stations", "Weather generator", "Daily weather"]
+    names.append("Methods paragraph")
     tabs = dict(zip(names, st.tabs(names)))
+    with tabs["Methods paragraph"]:
+        text, refs = r["methods"]
+        st.markdown("<div class='hint'>Ready to paste into your thesis or paper; edit freely. It is also in the "
+                    "zip (Report folder) and in the PDF report.</div>", unsafe_allow_html=True)
+        st.code(text, language=None, wrap_lines=True)
+        st.markdown("**References**")
+        st.code("\n\n".join(refs), language=None, wrap_lines=True)
 
+    with tabs["Health check and setup tips"]:
+        advice_section(r["advice"])
     with tabs["Map viewer"]:
         st_folium(viewer_map(r), key="viewer_map", height=600, use_container_width=True, returned_objects=[])
         st.caption("Switch layers on and off with the box at the top right. Click the square at the top left "

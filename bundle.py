@@ -12,8 +12,10 @@ APP = "SWAT Bharat"
 HOW_TO = """HOW TO LOAD IT
 --------------
 QSWAT (SWAT 2012) and QSWAT+ (SWAT+)
-  1. New project. DEM: Maps/dem.tif. Optionally use Maps/studyarea.shp as the mask
-     and Maps/points.shp to place your outlet near.
+  1. New project. DEM: Maps/dem.tif. Optionally use Maps/studyarea.shp as the mask,
+     Maps/rivers.shp as the "burn-in" stream network (Delineate Watershed form), and
+     Maps/points.shp as your outlet (if the catchment was traced, the point is already
+     moved onto the river).
   2. Land use: Maps/landuse.tif with LookupTables/landuse lookup QSWAT.csv
      (columns LANDUSE_ID, SWAT_CODE).
   3. Soil: Maps/soil.tif with LookupTables/soil lookup QSWAT.csv (SOIL_ID, SNAM),
@@ -23,7 +25,8 @@ QSWAT (SWAT 2012) and QSWAT+ (SWAT+)
      File > Import > Table from CSV, then copy the rows into usersoil).
   4. Weather: see below.
 ArcSWAT (SWAT 2012)
-  1. DEM: Maps/dem.tif. Land use and soil: the .tif maps with the ArcSWAT .txt
+  1. DEM: Maps/dem.tif (tick "Burn in" and choose Maps/rivers.shp if you want the
+     streams to follow the real rivers). Land use and soil: the .tif maps with the ArcSWAT .txt
      lookup tables in LookupTables (choose "Table" lookup, then the .txt file).
   2. Soil: paste SoilDatabase/usersoil.csv rows into the usersoil table of
      SWAT2012.mdb (Microsoft Access) before the HRU step; choose "User Soil".
@@ -61,6 +64,8 @@ GOOD_TO_KNOW = """GOOD TO KNOW
 SOURCES = """DATA SOURCES (please cite)
 --------------------------
 - Elevation: Copernicus DEM GLO-30 / GLO-90 (ESA, 2021), from the AWS Registry of Open Data.
+- River lines: OpenStreetMap contributors (https://www.openstreetmap.org), ODbL licence.
+- Catchment tracing: pyflwdir (Eilander et al., 2021, HESS 25, 5287-5313).
 - Land use: Zanaga, D. et al. (2022). ESA WorldCover 10 m 2021 v200.
   https://doi.org/10.5281/zenodo.7254221 (2020 map: v100, doi 10.5281/zenodo.5571936)
 - Soil: Poggio, L. et al. (2021). SoilGrids 2.0: producing soil information for the globe
@@ -97,6 +102,9 @@ def readme(area_text, maps=None, weather=None, today=None):
                 "SWATplus/        ObservedWeather (.cli lists + .pcp .tmp .hmd .slr .wnd files),",
                 "                 WeatherGenerator (CSV files for SWAT+ Editor, weather-wgn.cli)",
                 "CheckTables/     the weather as plain CSV files, to look at in Excel"]
+    out += ["Report/          SWAT Bharat data report.pdf (maps, tables, climate, methods) and",
+            "                 Methods paragraph.txt (ready to paste, with references)",
+            "Maps/rivers.shp  river lines from OpenStreetMap for burning into the DEM (if chosen)"]
     out += ["", HOW_TO, GOOD_TO_KNOW]
     if maps is not None:
         out += ["MAPS", "----"] + [f"{k}: {v}" for k, v in maps.settings.items()]
