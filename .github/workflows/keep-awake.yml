@@ -1,0 +1,53 @@
+# Keeps the Streamlit app awake.
+#
+# Streamlit's free hosting puts an app to sleep after about 12 hours without visitors,
+# and the next visitor then waits while it starts again. This GitHub robot opens the
+# app in a real (hidden) browser every 6 hours, and presses the wake-up button if the
+# app has fallen asleep anyway.
+#
+# The only line to change: put your app's link after APP_URL below.
+
+name: Keep the app awake
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"     # every 6 hours (at 17 minutes past)
+  workflow_dispatch:           # also lets you run it by hand from the Actions tab
+
+env:
+  APP_URL: "https://swat-bharat.streamlit.app"
+
+jobs:
+  visit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install a hidden browser
+        run: |
+          pip install playwright==1.48.0
+          python -m playwright install --with-deps chromium
+
+      - name: Open the app (and wake it if it is asleep)
+        shell: python
+        run: |
+          import os, asyncio
+          from playwright.async_api import async_playwright
+
+          async def main():
+              url = os.environ["APP_URL"]
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch()
+                  page = await browser.new_page()
+                  await page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+                  await page.wait_for_timeout(10_000)
+                  wake = page.get_by_role("button", name="Yes, get this app back up!")
+                  if await wake.count():
+                      print("The app was asleep: pressing the wake-up button.")
+                      await wake.click()
+                      await page.wait_for_timeout(90_000)   # give it time to start
+                  else:
+                      print("The app is awake.")
+                      await page.wait_for_timeout(20_000)   # stay a moment so the visit counts
+                  await browser.close()
+
+          asyncio.run(main())
