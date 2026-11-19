@@ -1,14 +1,24 @@
+# Colours for light and dark mode. Visitors choose Light, Dark or System
+# (follows their computer) from the ⋮ menu at the top right.
 [theme]
-base = "light"
+primaryColor = "#2a78d6"
+font = "sans serif"
+baseRadius = "medium"
+
+[theme.light]
 primaryColor = "#2a78d6"
 backgroundColor = "#ffffff"
 secondaryBackgroundColor = "#f3f6fa"
 textColor = "#1f2933"
-font = "sans serif"
-baseRadius = "medium"
+
+[theme.dark]
+primaryColor = "#4f95e8"
+backgroundColor = "#0f1419"
+secondaryBackgroundColor = "#1b2330"
+textColor = "#e6e9ee"
 
 [client]
-toolbarMode = "minimal"
+toolbarMode = "viewer"
 showErrorDetails = "none"
 
 [browser]
