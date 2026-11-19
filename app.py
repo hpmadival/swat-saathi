@@ -966,6 +966,7 @@ def results_section():
 
 results_section()
 
+st.caption(f"Version: maps engine {getattr(M, 'VERSION', 'old (before the soil fix)')}")
 st.markdown("<br><div class='hint' style='font-size:0.8rem'>Data: Copernicus DEM (ESA); ESA WorldCover; "
             "SoilGrids 2.0 (ISRIC); IMD Pune gridded rainfall (Pai et al. 2014) and temperature (Srivastava "
             "et al. 2009); NASA POWER. IMD download engine from the "
