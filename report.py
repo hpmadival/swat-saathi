@@ -57,8 +57,13 @@ def methods_text(info, ms=None, ws=None):
     zone = info["epsg"] - 32600
     used = ["app"]
     p = []
-    area = (f"The study area covered {info['area_km2']:,.0f} km², made up of {info['places']} with "
-            f"{info['margin']}, so that all data extend beyond the catchment boundary.")
+    own = info.get("own_km2", info["area_km2"])
+    if info["area_km2"] > own + 0.5 and "margin" in info["margin"]:
+        area = (f"The study area covered {own:,.0f} km² ({info['places']}). All input data were prepared for a "
+                f"{info['area_km2']:,.0f} km² download area that adds {info['margin']}, so that watershed "
+                f"delineation has terrain beyond the boundary and weather grid cells near the edge are included.")
+    else:
+        area = f"The study area covered {own:,.0f} km² ({info['places']}); data were prepared for this area."
     if info.get("traced"):
         tres = info.get("traced_res", 90)
         how = ("the Copernicus 90 m DEM to find its extent and then the 30 m DEM for the final boundary"
@@ -256,8 +261,10 @@ def pdf_report(info, sites, area_wgs84, ms=None, ws=None, rivers=None, adv=None)
         fig = plt.figure(figsize=(8.27, 11.69))
         fig.text(0.06, 0.965, "SWAT Bharat · data report", fontsize=16, weight="bold", color="#1b2a3a")
         fig.text(0.06, 0.945, f"Made on {datetime.date.today():%d %B %Y}", fontsize=8, color="#52606d")
-        lines = [f"Study area: {info['area_km2']:,.0f} km²  ·  WGS 84 / UTM zone {epsg - 32600}N (EPSG:{epsg})",
-                 f"Places: {info['places']}  ·  margin: {info['margin']}"]
+        own = info.get("own_km2", info["area_km2"])
+        lines = [f"Your area: {own:,.0f} km²  ·  download area: {info['area_km2']:,.0f} km² "
+                 f"({info['margin']})  ·  WGS 84 / UTM zone {epsg - 32600}N (EPSG:{epsg})",
+                 f"Places: {info['places']}"]
         if info.get("traced"):
             lines.append("Catchment traced from the outlet: " + info["traced"])
         if ms is not None:
@@ -314,7 +321,8 @@ def pdf_report(info, sites, area_wgs84, ms=None, ws=None, rivers=None, adv=None)
                                          f"Average: {v.mean():,.0f} m", fontsize=7.5, va="top")
                 if handles:
                     lax.legend(handles=handles, loc="center left", fontsize=6.8, frameon=False)
-        fig.text(0.06, 0.02, "Dashed line: study area (places + margin). Orange: your places. Blue lines: rivers.",
+        fig.text(0.06, 0.02, "Orange: your area (what SWAT models). Dashed line: download area (your area + safety "
+                 "margin). Blue lines: rivers.",
                  fontsize=7, color="#52606d")
         pdf.savefig(fig)
         plt.close(fig)

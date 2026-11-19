@@ -43,7 +43,7 @@ GDAL_ENV = {
     "VSI_CACHE": "TRUE",
 }
 
-VERSION = "2026-11-19 progress"   # shown at the bottom of the app, so you can see which version is running
+VERSION = "2026-11-19 margin and rivers"   # shown at the bottom of the app, so you can see which version is running
 
 DEM_NODATA = -9999.0
 SOILGRIDS_URL = ("/vsicurl?max_retry=3&retry_delay=1&list_dir=no&url="

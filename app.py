@@ -55,6 +55,7 @@ ss.setdefault("result", None)
 ss.setdefault("f_years_choice", "1991 to 2020")
 ss.setdefault("f_mode", "Every IMD grid cell is a station")
 ss.setdefault("sa_shape_km", 5.0)
+ss.setdefault("sa_use_margin", True)
 ss.setdefault("sa_point_km", 10.0)
 ss.setdefault("sa_point_shape", "Circle")
 ss.setdefault("sa_shape_style", "Follow the outline")
@@ -134,13 +135,20 @@ def current_sites():
     return [T.Site(T.clean_name(p["name"], used), shape(p["geojson"])) for p in ss.places]
 
 
-def current_area():
-    """The study area (WGS 84 geometry) and its UTM EPSG code, from the places and buffer choices."""
+def margin_km():
+    """The safety margin around shapes, or 0 if switched off."""
+    return float(ss.sa_shape_km) if ss.sa_use_margin else 0.0
+
+
+def current_area(with_margin=True):
+    """The download area (WGS 84 geometry) and its UTM EPSG code.
+    with_margin=False gives 'your area': your shapes as they are, plus the areas around points."""
     if not ss.places:
         return None, None
     from shapely import wkb as W
-    wkb, epsg = study_area_cached(json.dumps(ss.places, sort_keys=True), float(ss.sa_shape_km),
-                                  float(ss.sa_point_km), ss.sa_point_shape, ss.sa_shape_style)
+    wkb, epsg = study_area_cached(json.dumps(ss.places, sort_keys=True), margin_km() if with_margin else 0.0,
+                                  float(ss.sa_point_km), ss.sa_point_shape,
+                                  ss.sa_shape_style if with_margin else "Follow the outline")
     return (W.loads(wkb) if wkb else None), epsg
 
 
@@ -402,7 +410,8 @@ def build_map(sites, area, grid_var, base):
                            style_function=lambda f: {"color": "#2a78d6", "weight": 0.6, "fillColor": "#2a78d6",
                                                      "fillOpacity": f["properties"]["op"]},
                            tooltip=folium.GeoJsonTooltip(fields=["tip"], labels=False)).add_to(m)
-        folium.GeoJson(mapping(area), name="Study area (with buffer)", tooltip="Study area (your places + buffer)",
+        folium.GeoJson(mapping(area), name="Download area (your area + safety margin)",
+                       tooltip="Download area: your area + safety margin",
                        style_function=lambda _: {"color": "#1f9e89", "weight": 2.4, "dashArray": "7 5",
                                                  "fillColor": "#1f9e89", "fillOpacity": 0.06}).add_to(m)
     for s in sites:
@@ -410,9 +419,9 @@ def build_map(sites, area, grid_var, base):
             folium.CircleMarker([s.geometry.y, s.geometry.x], radius=6, color="#ffffff", weight=2,
                                 fill=True, fill_color="#eb6834", fill_opacity=1, tooltip=s.name).add_to(m)
         else:
-            folium.GeoJson(mapping(s.geometry), tooltip=s.name,
-                           style_function=lambda _: {"color": "#eb6834", "weight": 2.2,
-                                                     "fillOpacity": 0.04}).add_to(m)
+            folium.GeoJson(mapping(s.geometry), tooltip=f"Your area: {s.name}",
+                           style_function=lambda _: {"color": "#eb6834", "weight": 2.6,
+                                                     "fillOpacity": 0.06}).add_to(m)
     Draw(position="topleft",
          draw_options={"marker": True, "rectangle": True, "polygon": {"allowIntersection": False},
                        "polyline": False, "circle": False, "circlemarker": False},
@@ -434,20 +443,39 @@ def build_map(sites, area, grid_var, base):
 def map_section():
     sites = current_sites()
 
-    # --- the safety margin around the places ---
+    # --- your area and the safety margin around it ---
     with st.container(border=True):
-        st.markdown("<div class='panel-title' style='margin-top:0'>STUDY AREA · YOUR PLACES + A SAFETY MARGIN"
+        st.markdown("<div class='panel-title' style='margin-top:0'>DOWNLOAD AREA · YOUR AREA + A SAFETY MARGIN"
                     "</div>", unsafe_allow_html=True)
-        b1, b2, b3, b4 = st.columns([1, 1.25, 1, 1.25])
-        b1.number_input("Margin around shapes (km)", 0.0, 100.0, step=1.0, key="sa_shape_km",
-                        help="Maps and weather are fetched a little beyond your catchment, so QSWAT / ArcSWAT "
-                             "can delineate streams cleanly at the edges. 5 km is a safe default.")
-        b2.radio("Margin shape", ["Follow the outline", "Rectangle"], key="sa_shape_style")
-        b3.number_input("Size around points (km)", 0.5, 200.0, step=1.0, key="sa_point_km",
+        b0, b1, b2 = st.columns([1.5, 0.9, 1.3])
+        b0.toggle("Add a safety margin (recommended)", key="sa_use_margin",
+                  help="Switch off only if your boundary was already delineated from this same DEM and you "
+                       "want the files cut exactly to it.")
+        b1.number_input("Margin (km)", 0.5, 100.0, step=1.0, key="sa_shape_km", disabled=not ss.sa_use_margin)
+        b2.radio("Margin shape", ["Follow the outline", "Rectangle"], key="sa_shape_style", horizontal=True,
+                 disabled=not ss.sa_use_margin)
+        b3, b4, b5 = st.columns([1.5, 0.9, 1.3])
+        b3.markdown("<div class='hint' style='margin-top:1.9rem'>Points (outlets, gauges) need an area "
+                    "around them to download data for:</div>", unsafe_allow_html=True)
+        b4.number_input("Size around points (km)", 0.5, 200.0, step=1.0, key="sa_point_km",
                         help="For a circle, the radius. For a square, half its side (the distance from the "
-                             "point to each edge).")
-        b4.radio("Point area shape", ["Circle", "Square"], horizontal=True, key="sa_point_shape")
-
+                             "point to each edge). Not needed for an outlet whose catchment you traced.")
+        b5.radio("Point area shape", ["Circle", "Square"], horizontal=True, key="sa_point_shape")
+        with st.expander("Why add a safety margin?"):
+            st.markdown(
+                "**Your area** (orange on the map) is what SWAT will model. The **download area** (green dashed "
+                "line) is your area plus a margin. The margin is there because:\n"
+                "1. **Watershed delineation needs ground beyond the boundary.** QSWAT and ArcSWAT trace the "
+                "watershed edge and streams from the DEM. If the DEM stops exactly at your boundary, the edge "
+                "cells have no neighbours, and the traced watershed can come out smaller or cut off.\n"
+                "2. **Boundaries rarely match the DEM exactly.** An uploaded or hand-drawn boundary, or one from "
+                "another DEM, can be a few hundred metres off the divide this DEM finds. The margin keeps any "
+                "land that really drains to your outlet.\n"
+                "3. **Weather stations near the edge.** With the margin, IMD grid cells just outside your "
+                "boundary are included, so subbasins near the edge get their true nearest station.\n\n"
+                "**Is it required?** No, but it is safer. 5 km is usually enough (2–3 km for small catchments, "
+                "5–10 km for large or flat ones). Switch it off only when your boundary was delineated from "
+                "this same DEM and you want the files cut exactly to it.")
     area, epsg = current_area()
     t1, t2 = st.columns([1, 1.35])
     grid_label = t1.radio("Grid", ["Rainfall grid (0.25°)", "Temperature grid (1°)"], horizontal=True,
@@ -477,12 +505,21 @@ def map_section():
                 add_place(next_name("Area"), shapely.make_valid(geom))
             refresh_map_area()
 
+    st.markdown("<div class='hint' style='font-size:0.85rem'>"
+                "<span style='color:#eb6834;font-weight:700'>━ Orange</span>: your area (what SWAT will model) · "
+                "<span style='color:#1f9e89;font-weight:700'>╍ Green dashed</span>: download area (your area + "
+                "safety margin) · <span style='color:#2a78d6;font-weight:700'>▪ Blue squares</span>: IMD grid cells "
+                "used</div>", unsafe_allow_html=True)
     if sites:
         km2 = A.area_km2(area, epsg)
+        own, _e = current_area(with_margin=False)
+        own_km2 = A.area_km2(own, epsg) if own is not None else 0.0
         n_rain = len(preview_cells(area.wkb, "rain"))
         n_temp = len(preview_cells(area.wkb, "tmax"))
-        st.markdown(f"**Study area: {km2:,.0f} km²** (green dashed line) · UTM zone {epsg - 32600} N · "
-                    f"about **{n_rain}** IMD rainfall and **{n_temp}** temperature cells")
+        extra = (f" · the margin adds {km2 - own_km2:,.0f} km²" if ss.sa_use_margin and km2 > own_km2 + 0.5
+                 else " · no margin")
+        st.markdown(f"**Your area: {own_km2:,.0f} km²** · **Download area: {km2:,.0f} km²**{extra} · "
+                    f"UTM zone {epsg - 32600} N · about **{n_rain}** IMD rainfall and **{n_temp}** temperature cells")
         table = pd.DataFrame({
             "Name": [s.name for s in sites],
             "Type": ["Point" if s.is_point else "Area" for s in sites],
@@ -673,7 +710,7 @@ if submitted:
             if want_rivers:
                 trk.update("rivers", 0.1, "asking OpenStreetMap for river lines")
                 try:
-                    river_lines = RV.fetch_rivers(area, tuple(river_kinds or ["river"]))
+                    river_lines = RV.fetch_rivers(area, tuple(river_kinds or ["river"]), say=trk.step("rivers"))
                     if river_lines:
                         for f, b in RV.rivers_shapefile(river_lines, epsg).items():
                             files[f"Maps/{f}"] = b
@@ -696,21 +733,26 @@ if submitted:
                 files.update(S.weather_files(ws, swat2012=want_2012, swatplus=want_plus))
             trk.update("report", 0.1, "writing the README")
             km2 = A.area_km2(area, epsg)
-            area_text = (f"{km2:,.1f} km2, UTM zone {epsg - 32600} N (EPSG:{epsg}). Places: "
-                         + ", ".join(s.name for s in sites)
-                         + f". Margin: {ss.sa_shape_km:g} km around shapes ({ss.sa_shape_style.lower()}), "
-                         f"{ss.sa_point_km:g} km {ss.sa_point_shape.lower()} around points.")
+            own, _e = current_area(with_margin=False)
+            own_km2 = A.area_km2(own, epsg) if own is not None else km2
+            area_text = (f"Your area: {own_km2:,.1f} km2 ({', '.join(s.name for s in sites)}). "
+                         f"Download area: {km2:,.1f} km2 = your area + "
+                         + (f"a {margin_km():g} km safety margin ({ss.sa_shape_style.lower()})" if ss.sa_use_margin
+                            else "no margin")
+                         + f". UTM zone {epsg - 32600} N (EPSG:{epsg}). The margin gives QSWAT / ArcSWAT ground "
+                           f"beyond the boundary for clean delineation; SWAT models only your area.")
             text = B.readme(area_text, maps=ms, weather=S.weather_summary(ws) if ws else None)
             shapes_ = [s for s in sites if not s.is_point]
             pts_ = [s for s in sites if s.is_point]
             outlets = {p["name"] for p in ss.places if p.get("outlet")}
             pts_ = [s for s in pts_ if s.name not in outlets]
             margin = " and ".join(
-                ([f"a {ss.sa_shape_km:g} km margin around the boundary"
-                  + (" (as a rectangle)" if ss.sa_shape_style == "Rectangle" else "")] if shapes_ else [])
+                ([f"a {margin_km():g} km safety margin around the boundary"
+                  + (" (as a rectangle)" if ss.sa_shape_style == "Rectangle" else "")]
+                 if shapes_ and ss.sa_use_margin else [])
                 + ([f"a {ss.sa_point_km:g} km {ss.sa_point_shape.lower()} around each point"] if pts_ else []))
             traced = [v for k, v in ss.traced.items() if k in {s.name for s in sites}]
-            info = {"area_km2": km2, "epsg": epsg, "res": int(res), "lu_year": int(lu_year),
+            info = {"area_km2": km2, "own_km2": own_km2, "epsg": epsg, "res": int(res), "lu_year": int(lu_year),
                     "places": f"{len(sites)} place{'s' if len(sites) > 1 else ''} ({', '.join(s.name for s in sites)})",
                     "margin": margin or "no margin", "traced": traced[0] if traced else None,
                     "rivers": len(river_lines) if river_lines else None,
@@ -730,7 +772,10 @@ if submitted:
                                       if ms is not None and getattr(ms, k) is not None},
                          "overlays": M.overlay_layers(ms) if ms is not None else {},
                          "area": area, "sites": sites, "rivers": river_lines, "river_problem": river_problem,
-                         "pdf": pdf, "methods": R.methods_text(info, ms, ws), "advice": adv}
+                         "pdf": pdf, "methods": R.methods_text(info, ms, ws), "advice": adv,
+                         "files": files, "readme": text, "info": info, "traced": tr_obj, "epsg": epsg,
+                         "own_km2": own_km2, "river_kinds": tuple(river_kinds or ["river"]),
+                         "rivers_wanted": want_rivers}
             trk.update("report", 1.0, "done")
             trk.empty()
         except Exception as err:
@@ -783,7 +828,7 @@ def viewer_map(r):
     for k, (url, bounds) in r["overlays"].items():
         folium.raster_layers.ImageOverlay(url, bounds=bounds, name=labels[k], opacity=0.75,
                                           show=(k == first), interactive=False).add_to(m)
-    folium.GeoJson(mapping(area), name="Study area (with buffer)",
+    folium.GeoJson(mapping(area), name="Download area (your area + safety margin)",
                    style_function=lambda _: {"color": "#ffffff", "weight": 2.4, "dashArray": "7 5",
                                              "fill": False}).add_to(m)
     if r.get("rivers"):
@@ -792,7 +837,7 @@ def viewer_map(r):
             folium.PolyLine([(y, x) for x, y in g.coords], color="#4fc3f7", weight=2 if kind == "river" else 1,
                             tooltip=nm or kind.capitalize()).add_to(fg)
         fg.add_to(m)
-    places = folium.FeatureGroup(name="Your places")
+    places = folium.FeatureGroup(name="Your area")
     for s in r["sites"]:
         if s.is_point:
             folium.CircleMarker([s.geometry.y, s.geometry.x], radius=6, color="#ffffff", weight=2, fill=True,
@@ -837,6 +882,17 @@ def wgn_chart(w):
     return alt.layer(bars, lines).resolve_scale(y="independent").properties(height=300)
 
 
+def soil_legend(ms):
+    cols = M.soil_colours(ms)
+    rows = "".join(
+        f"<div style='display:flex;align-items:center;gap:8px;margin:2px 0'>"
+        f"<span style='flex:none;width:14px;height:14px;border-radius:3px;background:{cols[c]};"
+        f"border:1px solid #ccc'></span><span><b>{n}</b>: {w} ({p:.1f}%)</span></div>"
+        for c, n, w, p in zip(ms.soil_units["Soil code"], ms.soil_units["Soil name"],
+                              ms.soil_units["What it is"], ms.soil_units["Area (%)"]))
+    return f"<div style='font-size:0.85rem'>{rows}</div>"
+
+
 def landuse_legend(lk):
     rows = "".join(
         f"<div style='display:flex;align-items:center;gap:8px;margin:2px 0'>"
@@ -845,6 +901,34 @@ def landuse_legend(lk):
         for v, name, code, pct in zip(lk["Value"], lk["Land cover (ESA WorldCover)"], lk["SWAT code"],
                                       lk["Area (%)"]))
     return f"<div style='font-size:0.88rem'>{rows}</div>"
+
+
+def retry_rivers(r):
+    """Fetch only the river lines again and add them to the zip, report and map viewer."""
+    with st.spinner("Asking OpenStreetMap for the river lines again…"):
+        try:
+            lines = RV.fetch_rivers(r["area"], r["river_kinds"])
+        except RV.RiverError as err:
+            st.error(str(err))
+            return
+    if not lines:
+        r["river_problem"] = "No river lines are mapped in OpenStreetMap for this area."
+        st.rerun()
+    files = r["files"]
+    for f, b in RV.rivers_shapefile(lines, r["epsg"]).items():
+        files[f"Maps/{f}"] = b
+    r["info"]["rivers"] = len(lines)
+    r["advice"] = SA.build_advice(r["ms"], r["ws"], r["sites"], lines, r["traced"])
+    files["Report/Setup suggestions.txt"] = SA.advice_text(r["advice"])
+    files["Report/Health check.csv"] = r["advice"]["health"].to_csv(index=False)
+    r["pdf"] = R.pdf_report(r["info"], r["sites"], r["area"], r["ms"], r["ws"], lines, r["advice"])
+    files["Report/SWAT Bharat data report.pdf"] = r["pdf"]
+    files["Report/Methods paragraph.txt"] = R.methods_file(r["info"], r["ms"], r["ws"])
+    r["methods"] = R.methods_text(r["info"], r["ms"], r["ws"])
+    r["zip"] = B.build_zip(files, r["readme"])
+    r["rivers"], r["river_problem"] = lines, None
+    st.toast(f"Added {len(lines)} river segments to the zip.")
+    st.rerun()
 
 
 def advice_section(adv):
@@ -936,7 +1020,8 @@ def results_section():
                 unsafe_allow_html=True)
 
     c = st.columns(5)
-    c[0].metric("Study area", f"{r['km2']:,.0f} km²")
+    c[0].metric("Your area / download area", f"{r.get('own_km2', r['km2']):,.0f} / {r['km2']:,.0f} km²",
+                help="Your area is what SWAT models. The download area adds the safety margin around it.")
     if ms is not None:
         c[1].metric("Map size", f"{ms.grid.width:,} × {ms.grid.height:,}")
         if ms.landuse_lookup is not None:
@@ -948,7 +1033,10 @@ def results_section():
                                                    f"{len(ws.stations.get('tmp', []))}")
 
     if r.get("river_problem"):
-        st.warning("River lines: " + r["river_problem"])
+        w1, w2 = st.columns([3, 1])
+        w1.warning("River lines: " + r["river_problem"])
+        if r.get("rivers_wanted") and w2.button("🔁 Try river lines again", width="stretch"):
+            retry_rivers(r)
     for p in tidy_problems((ms.problems if ms else []) + (ws.problems if ws else [])):
         st.warning(p)
     for n in (ws.notes if ws else []):
@@ -998,6 +1086,8 @@ def results_section():
                 col.image(png, width="stretch")
                 if k == "landuse":
                     col.markdown(landuse_legend(ms.landuse_lookup), unsafe_allow_html=True)
+                if k == "soil" and ms.soil_units is not None:
+                    col.markdown(soil_legend(ms), unsafe_allow_html=True)
                 if k == "dem":
                     v = ms.dem[ms.dem != M.DEM_NODATA]
                     if v.size:

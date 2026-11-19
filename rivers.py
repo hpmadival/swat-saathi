@@ -9,15 +9,19 @@ This file gets the rivers (and optionally canals and streams) mapped in
 OpenStreetMap, through the free Overpass service, and cuts them to the study area.
 """
 
+import math
 import time
 
 import requests
 from shapely.prepared import prep
-from shapely.geometry import LineString
+from shapely.geometry import LineString, box
 
-OVERPASS = ["https://overpass-api.de/api/interpreter",
-            "https://overpass.kumi.systems/api/interpreter",
-            "https://maps.mail.ru/osm/tools/overpass/api/interpreter"]
+OVERPASS = ["https://overpass-api.de/api/interpreter",          # main server (Germany)
+            "https://overpass.private.coffee/api/interpreter",   # volunteer mirrors
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+            "https://overpass.kumi.systems/api/interpreter"]
+CHUNK_DEG = 0.5          # ask for at most half a degree (about 55 km) at a time
+TIME_LIMIT = 150         # give up on river lines after this many seconds in total
 
 KINDS = {"river": "Rivers", "stream": "Streams", "canal": "Canals"}
 
@@ -29,12 +33,12 @@ class RiverError(Exception):
 def _query(bounds, kinds):
     w, s, e, n = bounds
     pattern = "|".join(kinds)
-    return (f'[out:json][timeout:180];(way["waterway"~"^({pattern})$"]({s:.5f},{w:.5f},{n:.5f},{e:.5f}););'
-            f"out geom;")
+    return (f'[out:json][timeout:90];way["waterway"~"^({pattern})$"]({s:.5f},{w:.5f},{n:.5f},{e:.5f});'
+            f"out geom qt;")
 
 
 def parse_overpass(data):
-    """Turn an Overpass JSON reply into a list of (LineString, kind, name)."""
+    """Turn an Overpass JSON reply into a list of (way id, LineString, kind, name)."""
     out = []
     for el in data.get("elements", []):
         pts = el.get("geometry") or []
@@ -42,39 +46,58 @@ def parse_overpass(data):
             continue
         tags = el.get("tags", {})
         line = LineString([(p["lon"], p["lat"]) for p in pts])
-        out.append((line, tags.get("waterway", ""), tags.get("name:en") or tags.get("name") or ""))
+        out.append((el.get("id"), line, tags.get("waterway", ""), tags.get("name:en") or tags.get("name") or ""))
     return out
 
 
-def fetch_rivers(area_wgs84, kinds=("river",), timeout=200, fetch=None):
-    """River lines inside the study area: list of (LineString in WGS 84, kind, name)."""
-    if fetch is None:
-        def fetch(q):
-            last = None
-            for url in OVERPASS:
-                for attempt in range(2):
-                    try:
-                        r = requests.post(url, data={"data": q}, timeout=timeout,
-                                          headers={"User-Agent": "SWAT-Bharat (SWAT input tool)"})
-                        if r.status_code in (429, 504):
-                            time.sleep(5 * (attempt + 1))
-                            last = f"busy ({r.status_code})"
-                            continue
-                        r.raise_for_status()
-                        return r.json()
-                    except (requests.RequestException, ValueError) as err:
-                        last = err.__class__.__name__
-            raise RiverError(f"The OpenStreetMap river service did not answer ({last}). Try again later.")
-    data = fetch(_query(area_wgs84.bounds, kinds))
-    lines = []
+def _ask_servers(q, deadline):
+    """Try each Overpass server in turn; a busy server is skipped at once rather than waited for."""
+    last = "no answer"
+    for rnd in range(3):
+        for url in OVERPASS:
+            if time.time() > deadline:
+                raise RiverError(f"The OpenStreetMap river service is too busy right now ({last}). "
+                                 f"Try again in a few minutes with the 'Try river lines again' button.")
+            try:
+                r = requests.post(url, data={"data": q}, timeout=min(100, max(10, deadline - time.time())),
+                                  headers={"User-Agent": "SWAT-Bharat (SWAT input tool)"})
+                if r.status_code == 200:
+                    return r.json()
+                last = f"busy ({r.status_code})" if r.status_code in (429, 502, 503, 504) else f"error {r.status_code}"
+            except (requests.RequestException, ValueError) as err:
+                last = err.__class__.__name__
+            time.sleep(1)
+        time.sleep(5 * (rnd + 1))
+    raise RiverError(f"The OpenStreetMap river service did not answer ({last}). Try again in a few minutes "
+                     f"with the 'Try river lines again' button.")
+
+
+def _chunks(bounds):
+    w, s, e, n = bounds
+    nx, ny = max(1, math.ceil((e - w) / CHUNK_DEG)), max(1, math.ceil((n - s) / CHUNK_DEG))
+    dx, dy = (e - w) / nx, (n - s) / ny
+    return [(w + i * dx, s + j * dy, w + (i + 1) * dx, s + (j + 1) * dy) for i in range(nx) for j in range(ny)]
+
+
+def fetch_rivers(area_wgs84, kinds=("river",), fetch=None, say=None):
+    """River lines inside the study area: list of (LineString in WGS 84, kind, name).
+    Big areas are asked for in pieces; a line that crosses pieces is kept once."""
+    say = say or (lambda f, m: None)
+    deadline = time.time() + TIME_LIMIT
+    fetch = fetch or (lambda q: _ask_servers(q, deadline))
     prepared = prep(area_wgs84)
-    for line, kind, name in parse_overpass(data):
-        if not prepared.intersects(line):
-            continue
-        cut = line.intersection(area_wgs84)
-        for part in getattr(cut, "geoms", [cut]):
-            if part.geom_type == "LineString" and part.length > 0:
-                lines.append((part, kind, name))
+    seen, lines = set(), []
+    pieces = [c for c in _chunks(area_wgs84.bounds) if prepared.intersects(box(*c))]
+    for k, c in enumerate(pieces, 1):
+        say((k - 1) / len(pieces), f"asking OpenStreetMap, piece {k} of {len(pieces)}")
+        for wid, line, kind, name in parse_overpass(fetch(_query(c, kinds))):
+            if wid in seen or not prepared.intersects(line):
+                continue
+            seen.add(wid)
+            cut = line.intersection(area_wgs84)
+            for part in getattr(cut, "geoms", [cut]):
+                if part.geom_type == "LineString" and part.length > 0:
+                    lines.append((part, kind, name))
     return lines
 
 
