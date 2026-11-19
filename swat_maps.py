@@ -348,9 +348,80 @@ def landuse_table(lu, mask, codes):
 # ---------------------------------------------------------------------------
 # 3. Soil
 # ---------------------------------------------------------------------------
+SOILGRIDS_WCS = "https://maps.isric.org/mapserv"
+WCS_CHUNK_M = 150_000          # ask for at most 150 km x 150 km at a time (600 x 600 cells)
+
+
+def _wcs_piece(var, depth, x0, y0, x1, y1, tries=4, timeout=120):
+    """One GeoTIFF from ISRIC's map service (WCS), in Homolosine metres."""
+    import time
+    import requests
+    from rasterio.io import MemoryFile
+    params = [("map", f"/map/{var}.map"), ("SERVICE", "WCS"), ("VERSION", "2.0.1"),
+              ("REQUEST", "GetCoverage"), ("COVERAGEID", f"{var}_{depth}_mean"), ("FORMAT", "GEOTIFF_INT16"),
+              ("SUBSET", f"X({x0:.0f},{x1:.0f})"), ("SUBSET", f"Y({y0:.0f},{y1:.0f})")]
+    last = ""
+    for attempt in range(tries):
+        try:
+            r = requests.get(SOILGRIDS_WCS, params=params, timeout=timeout,
+                             headers={"User-Agent": "SWAT-Bharat (SWAT input tool)"})
+            if r.status_code == 200 and r.content[:4] in (b"II*\x00", b"MM\x00*"):
+                with MemoryFile(r.content) as mf, mf.open() as src:
+                    return src.read(1), src.transform, src.crs, src.nodata
+            last = f"HTTP {r.status_code}: {r.text[:120].strip()}" if r.status_code != 200 else \
+                f"not a map: {r.text[:120].strip()}"
+        except requests.RequestException as err:
+            last = err.__class__.__name__
+        time.sleep(3 * (attempt + 1))
+    raise MapError(f"ISRIC map service: {last}")
+
+
+def soilgrids_wcs_reader(var, depth, bounds):
+    """One SoilGrids layer through ISRIC's map service, in pieces, stitched together."""
+    import rasterio
+    from rasterio.crs import CRS
+    from rasterio.warp import transform_bounds
+    igh = CRS.from_proj4(HOMOLOSINE)
+    x0, y0, x1, y1 = transform_bounds("EPSG:4326", igh, *bounds, densify_pts=21)
+    x0, y0 = math.floor(x0 / 250) * 250, math.floor(y0 / 250) * 250
+    x1, y1 = math.ceil(x1 / 250) * 250, math.ceil(y1 / 250) * 250
+    if (x1 - x0) <= WCS_CHUNK_M and (y1 - y0) <= WCS_CHUNK_M:
+        a, t, c, n = _wcs_piece(var, depth, x0, y0, x1, y1)
+        return a, t, c or igh, n
+    # big area: fetch chunks and stitch them on one Homolosine grid
+    from rasterio.transform import from_origin
+    from rasterio.warp import reproject
+    w, h = int((x1 - x0) / 250), int((y1 - y0) / 250)
+    out = np.full((h, w), -32768, dtype="int16")
+    t = from_origin(x0, y1, 250, 250)
+    for cx in np.arange(x0, x1, WCS_CHUNK_M):
+        for cy in np.arange(y0, y1, WCS_CHUNK_M):
+            a, ta, ca, na = _wcs_piece(var, depth, cx, cy, min(cx + WCS_CHUNK_M, x1), min(cy + WCS_CHUNK_M, y1))
+            with rasterio.Env():
+                reproject(a, out, src_transform=ta, src_crs=ca or igh, src_nodata=na if na is not None else -32768,
+                          dst_transform=t, dst_crs=igh, dst_nodata=-32768, init_dest_nodata=False)
+    return out, t, igh, -32768
+
+
 def soilgrids_reader(var, depth, bounds):
-    """Read one SoilGrids layer (Homolosine) covering WGS 84 bounds."""
-    return read_window(SOILGRIDS_URL.format(var=var, depth=depth), bounds)
+    """Read one SoilGrids layer covering WGS 84 bounds: first straight from ISRIC's file server,
+    and if that fails or comes back empty, from ISRIC's map service. Raises MapError with the reason."""
+    errors = []
+    for how, fn in (("file server", lambda: read_window(SOILGRIDS_URL.format(var=var, depth=depth), bounds)),
+                    ("map service", lambda: soilgrids_wcs_reader(var, depth, bounds))):
+        try:
+            piece = fn()
+            if piece is not None:
+                a, _, _, nod = piece
+                good = (a != nod) & (a > -32000) if nod is not None else (a > -32000)
+                if good.any():
+                    return piece
+                errors.append(f"{how}: no values here")
+            else:
+                errors.append(f"{how}: not found")
+        except Exception as err:                       # try the other route
+            errors.append(f"{how}: {str(err)[:160]}")
+    raise MapError(f"{var} {depth}: " + "; ".join(errors))
 
 
 def build_soil(grid, area_utm, mask, reader=None, say=None, prefix="SG"):
@@ -372,8 +443,23 @@ def build_soil(grid, area_utm, mask, reader=None, say=None, prefix="SG"):
 
     jobs = [(v, d) for v in SOIL_VARS for d in SOIL_DEPTHS]
     say and say(f"Soil: reading {len(jobs)} SoilGrids layers")
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        got = list(pool.map(lambda j: reader(j[0], j[1], bounds), jobs))
+    def safe(j):
+        try:
+            return reader(j[0], j[1], bounds), None
+        except Exception as err:
+            return None, str(err)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:      # gentle on ISRIC's servers
+        results = list(pool.map(safe, jobs))
+    got = [p for p, _ in results]
+    errs = [e for _, e in results if e]
+    needed = {("sand", d) for d in SOIL_DEPTHS} | {("clay", d) for d in SOIL_DEPTHS} | \
+             {("silt", d) for d in SOIL_DEPTHS}
+    missing = [f"{v} {d}" for (v, d), p in zip(jobs, got) if p is None and (v, d) in needed]
+    if missing:
+        raise MapError("SoilGrids could not be reached for " + ", ".join(missing[:4])
+                       + (" and more" if len(missing) > 4 else "") + ". Reason: " + (errs[0] if errs else "unknown")
+                       + ". ISRIC's servers are sometimes busy: try again in a few minutes.")
     layers = {}
     for (v, d), piece in zip(jobs, got):
         arr = np.full((sh, sw), np.nan, dtype="float32")
@@ -533,7 +619,12 @@ def build_maps(area_wgs84, epsg, res=30, want_dem=True, want_landuse=True, want_
             ms.dem[~mask] = DEM_NODATA
     if want_landuse:
         say("Land use")
-        ms.landuse = build_landuse(grid, landuse_year, lu_reader, say)
+        try:
+            ms.landuse = build_landuse(grid, landuse_year, lu_reader, say)
+        except MapError as err:
+            ms.problems.append(f"Land use could not be made: {err}")
+            want_landuse = False
+    if want_landuse:
         if blank_outside:
             ms.landuse[~mask] = 0
         codes = {v: c for v, (_, c) in WORLDCOVER.items()}
@@ -541,11 +632,14 @@ def build_maps(area_wgs84, epsg, res=30, want_dem=True, want_landuse=True, want_
         ms.landuse_lookup = landuse_table(ms.landuse, mask if blank_outside else np.ones_like(mask), codes)
     if want_soil:
         say("Soil")
-        ms.soil, ms.soil_units, ms.usersoil = build_soil(grid, area_utm, mask, soil_reader, say)
-        if blank_outside:
-            ms.soil[~mask] = 0
-        ms.notes.append(f"Soil: {len(ms.soil_units)} soil types made from SoilGrids topsoil (0-30 cm) and "
-                        f"subsoil (30-100 cm) texture, 4 layers down to 1 m.")
+        try:
+            ms.soil, ms.soil_units, ms.usersoil = build_soil(grid, area_utm, mask, soil_reader, say)
+            if blank_outside:
+                ms.soil[~mask] = 0
+            ms.notes.append(f"Soil: {len(ms.soil_units)} soil types made from SoilGrids topsoil (0-30 cm) and "
+                            f"subsoil (30-100 cm) texture, 4 layers down to 1 m.")
+        except MapError as err:                       # keep everything else; say what went wrong
+            ms.problems.append(f"Soil could not be made: {err}")
     ms.settings = {
         "Map grid": f"{res} m cells, WGS 84 / UTM (EPSG:{epsg})",
         "Map size": f"{grid.width} x {grid.height} cells",
