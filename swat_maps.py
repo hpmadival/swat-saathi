@@ -37,13 +37,13 @@ import pandas as pd
 GDAL_ENV = {
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.vrt",
-    "GDAL_HTTP_MAX_RETRY": "4",
+    "GDAL_HTTP_MAX_RETRY": "2",
     "GDAL_HTTP_RETRY_DELAY": "2",
-    "GDAL_HTTP_TIMEOUT": "120",
+    "GDAL_HTTP_TIMEOUT": "45",
     "VSI_CACHE": "TRUE",
 }
 
-VERSION = "2026-11-19 soil fix"   # shown at the bottom of the app, so you can see which version is running
+VERSION = "2026-11-19 progress"   # shown at the bottom of the app, so you can see which version is running
 
 DEM_NODATA = -9999.0
 SOILGRIDS_URL = ("/vsicurl?max_retry=3&retry_delay=1&list_dir=no&url="
@@ -117,6 +117,8 @@ SOIL_VARS = {   # SoilGrids name -> (our name, divide by, to get)
     "cfvo": ("rock", 10.0),        # cm3/dm3 -> % by volume
     "phh2o": ("ph", 10.0),         # pH x 10 -> pH
 }
+SOIL_NAMES = {"sand": "sand", "silt": "silt", "clay": "clay", "bdod": "bulk density",
+              "soc": "organic carbon", "cfvo": "gravel", "phh2o": "pH"}
 SOIL_DEPTHS = ["0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm"]
 DEPTH_CM = [(0, 5), (5, 15), (15, 30), (30, 60), (60, 100)]
 # SWAT layers: (bottom depth in mm, the SoilGrids depths that make it, with weights = thickness)
@@ -299,9 +301,17 @@ def _paint(dest, pieces, grid, resampling, src_nodata, dst_nodata):
     return dest
 
 
-def _fetch_many(urls, bounds, reader, parallel=4):
+def _fetch_many(urls, bounds, reader, parallel=4, say=None, what="tile"):
+    """Read several tiles at once; report each finished tile through say(fraction, message)."""
+    from concurrent.futures import as_completed
+    say = say or (lambda f, m: None)
+    out = [None] * len(urls)
     with ThreadPoolExecutor(max_workers=parallel) as pool:
-        return list(pool.map(lambda u: reader(u, bounds), urls))
+        jobs = {pool.submit(reader, u, bounds): i for i, u in enumerate(urls)}
+        for n, job in enumerate(as_completed(jobs), 1):
+            out[jobs[job]] = job.result()
+            say(n / len(urls), f"{what} {n} of {len(urls)} downloaded")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -313,8 +323,11 @@ def build_dem(grid, reader=None, say=None):
     bounds = _wgs84_bounds(grid)
     src_res = 30 if grid.res < 60 else 90
     urls = [dem_url(la, lo, src_res) for la, lo in _tiles(bounds, 1)]
-    say and say(f"Elevation: reading {len(urls)} Copernicus DEM tile(s)")
-    pieces = [p for p in _fetch_many(urls, bounds, reader) if p is not None]
+    say = say or (lambda f, m: None)
+    say(0.0, f"reading {len(urls)} Copernicus DEM tile(s)")
+    pieces = [p for p in _fetch_many(urls, bounds, reader, say=lambda f, m: say(0.9 * f, m),
+                                     what="Copernicus DEM tile") if p is not None]
+    say(0.95, "fitting the DEM to the UTM grid")
     if not pieces:
         raise MapError("No Copernicus DEM tiles were found for this area.")
     dem = np.full((grid.height, grid.width), DEM_NODATA, dtype="float32")
@@ -330,8 +343,11 @@ def build_landuse(grid, year=2021, reader=None, say=None):
     reader = reader or read_window
     bounds = _wgs84_bounds(grid)
     urls = [worldcover_url(la, lo, year) for la, lo in _tiles(bounds, 3)]
-    say and say(f"Land use: reading {len(urls)} ESA WorldCover tile(s)")
-    pieces = [p for p in _fetch_many(urls, bounds, reader) if p is not None]
+    say = say or (lambda f, m: None)
+    say(0.0, f"reading {len(urls)} ESA WorldCover tile(s)")
+    pieces = [p for p in _fetch_many(urls, bounds, reader, say=lambda f, m: say(0.85 * f, m),
+                                     what="ESA WorldCover tile") if p is not None]
+    say(0.9, "taking the most common class in each cell")
     if not pieces:
         raise MapError("No ESA WorldCover tiles were found for this area.")
     lu = np.zeros((grid.height, grid.width), dtype="uint8")
@@ -354,7 +370,7 @@ SOILGRIDS_WCS = "https://maps.isric.org/mapserv"
 WCS_CHUNK_M = 150_000          # ask for at most 150 km x 150 km at a time (600 x 600 cells)
 
 
-def _wcs_piece(var, depth, x0, y0, x1, y1, tries=4, timeout=120):
+def _wcs_piece(var, depth, x0, y0, x1, y1, tries=2, timeout=60):
     """One GeoTIFF from ISRIC's map service (WCS), in Homolosine metres."""
     import time
     import requests
@@ -426,7 +442,7 @@ def soilgrids_reader(var, depth, bounds):
     raise MapError(f"{var} {depth}: " + "; ".join(errors))
 
 
-def build_soil(grid, area_utm, mask, reader=None, say=None, prefix="SG"):
+def build_soil(grid, area_utm, mask, reader=None, say=None, prefix="SG", time_limit=240):
     """Soil map on the main grid + table of soil units + usersoil rows."""
     import rasterio
     from rasterio.enums import Resampling
@@ -444,17 +460,38 @@ def build_soil(grid, area_utm, mask, reader=None, say=None, prefix="SG"):
     sgrid = Grid(grid.epsg, from_origin(sx0, sy1, r, r), sw, sh, r)
 
     jobs = [(v, d) for v in SOIL_VARS for d in SOIL_DEPTHS]
-    say and say(f"Soil: reading {len(jobs)} SoilGrids layers")
+    say = say or (lambda f, m: None)
+    say(0.0, f"reading {len(jobs)} SoilGrids layers")
+
     def safe(j):
         try:
             return reader(j[0], j[1], bounds), None
         except Exception as err:
             return None, str(err)
 
-    with ThreadPoolExecutor(max_workers=3) as pool:      # gentle on ISRIC's servers
-        results = list(pool.map(safe, jobs))
+    # 3 at a time (gentle on ISRIC's servers), with an overall time limit so a dead server
+    # cannot freeze the app: after time_limit seconds, layers still missing count as failed.
+    import time
+    from concurrent.futures import FIRST_COMPLETED, wait
+    pool = ThreadPoolExecutor(max_workers=3)
+    futs = {pool.submit(safe, j): k for k, j in enumerate(jobs)}
+    results = [(None, "not finished within the time limit")] * len(jobs)
+    deadline = time.time() + time_limit
+    done_n, pending = 0, set(futs)
+    while pending and time.time() < deadline:
+        finished, pending = wait(pending, timeout=max(0.5, min(5, deadline - time.time())),
+                                 return_when=FIRST_COMPLETED)
+        for f in finished:
+            k = futs[f]
+            results[k] = f.result()
+            done_n += 1
+            v, d = jobs[k]
+            say(0.9 * done_n / len(jobs), f"layer {done_n} of {len(jobs)} downloaded "
+                                          f"({SOIL_NAMES.get(v, v)}, {d.replace('cm', ' cm')})")
+    pool.shutdown(wait=False, cancel_futures=True)
     got = [p for p, _ in results]
     errs = [e for _, e in results if e]
+    say(0.93, "working out soil types and their properties")
     needed = {("sand", d) for d in SOIL_DEPTHS} | {("clay", d) for d in SOIL_DEPTHS} | \
              {("silt", d) for d in SOIL_DEPTHS}
     missing = [f"{v} {d}" for (v, d), p in zip(jobs, got) if p is None and (v, d) in needed]
@@ -607,22 +644,23 @@ def _usersoil_row(objectid, snam, props):
 def build_maps(area_wgs84, epsg, res=30, want_dem=True, want_landuse=True, want_soil=True,
                landuse_year=2021, crop_code="AGRL", tree_code="FRST", urban_code="URMD",
                blank_outside=True, progress=None, dem_reader=None, lu_reader=None, soil_reader=None):
-    say = progress or (lambda m: None)
+    report = progress or (lambda stage, f, m: None)
+
+    def stage(name):
+        return lambda f, m: report(name, f, m)
     grid, area_utm = make_grid(area_wgs84, epsg, res)
     ms = MapSet(grid=grid, area_utm=area_utm)
     mask = area_mask(grid, area_utm)
     if want_dem:
-        say("Elevation")
-        ms.dem = build_dem(grid, dem_reader, say)
+        ms.dem = build_dem(grid, dem_reader, stage("dem"))
         if (ms.dem[mask] == DEM_NODATA).any():
             ms.problems.append("Part of the study area has no elevation (over the sea, or a DEM tile is "
                                "missing).")
         if blank_outside:
             ms.dem[~mask] = DEM_NODATA
     if want_landuse:
-        say("Land use")
         try:
-            ms.landuse = build_landuse(grid, landuse_year, lu_reader, say)
+            ms.landuse = build_landuse(grid, landuse_year, lu_reader, stage("landuse"))
         except MapError as err:
             ms.problems.append(f"Land use could not be made: {err}")
             want_landuse = False
@@ -633,9 +671,8 @@ def build_maps(area_wgs84, epsg, res=30, want_dem=True, want_landuse=True, want_
         codes.update({10: tree_code, 40: crop_code, 50: urban_code})
         ms.landuse_lookup = landuse_table(ms.landuse, mask if blank_outside else np.ones_like(mask), codes)
     if want_soil:
-        say("Soil")
         try:
-            ms.soil, ms.soil_units, ms.usersoil = build_soil(grid, area_utm, mask, soil_reader, say)
+            ms.soil, ms.soil_units, ms.usersoil = build_soil(grid, area_utm, mask, soil_reader, stage("soil"))
             if blank_outside:
                 ms.soil[~mask] = 0
             ms.notes.append(f"Soil: {len(ms.soil_units)} soil types made from SoilGrids topsoil (0-30 cm) and "

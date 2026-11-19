@@ -98,12 +98,14 @@ def trace_catchment(lat, lon, start_km=25.0, max_km=150.0, snap_m=1000.0, fine=T
     """
     import geopandas as gpd
     from shapely.geometry import Point, box
-    say = say or (lambda m: None)
+    say = say or (lambda f, m: None)
     epsg = A.utm_epsg(lon, lat)
     half = float(start_km)
+    tries = 0
     while True:
         square, (x, y) = _square(lon, lat, half, epsg)
-        say(f"Finding the catchment at 90 m in a {2 * half:.0f} km square")
+        tries += 1
+        say(min(0.12 * tries, 0.5), f"finding the catchment at 90 m in a {2 * half:.0f} km square")
         grid, _ = M.make_grid(square, epsg, 90)
         dem = M.build_dem(grid, reader)
         if (dem == M.DEM_NODATA).all():
@@ -127,7 +129,7 @@ def trace_catchment(lat, lon, start_km=25.0, max_km=150.0, snap_m=1000.0, fine=T
             if cells > MAX_FINE_CELLS:
                 note = "The catchment is too big to re-trace at 30 m on the free server, so the 90 m outline is used."
                 break
-            say("Re-tracing the catchment at 30 m")
+            say(0.6, "re-tracing the catchment at 30 m for a sharp boundary")
             bx_w = gpd.GeoSeries([bx], crs=epsg).to_crs(4326).iloc[0]
             g30, _ = M.make_grid(bx_w, epsg, 30)
             d30 = M.build_dem(g30, reader)
@@ -140,6 +142,7 @@ def trace_catchment(lat, lon, start_km=25.0, max_km=150.0, snap_m=1000.0, fine=T
                 continue
             poly, sx, sy, grid, res_used = _mask_to_polygon(m30, g30), sx30, sy30, g30, 30
             break
+    say(0.97, "drawing the boundary")
     area = poly.area / 1e6
     poly_w = gpd.GeoSeries([poly], crs=epsg).to_crs(4326).iloc[0]
     outlet_w = gpd.GeoSeries([Point(sx, sy)], crs=epsg).to_crs(4326).iloc[0]

@@ -65,7 +65,7 @@ st.markdown("""
 <style>
 footer {visibility: hidden; height: 0;}
 header[data-testid="stHeader"] {background: transparent;}
-.block-container {padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1500px;}
+.block-container {padding-top: 3.6rem; padding-bottom: 2rem; max-width: 1500px;}   /* start below Streamlit's top bar */
 div[data-testid="stMetric"] {background: rgba(42,120,214,0.07); border: 1px solid rgba(128,140,155,0.28);
                              border-radius: 10px; padding: 10px 14px;}
 div[data-testid="stMetricLabel"] p {font-size: 0.85rem; opacity: 0.75;}
@@ -163,11 +163,71 @@ def next_name(kind):
     return f"{kind} {n}"
 
 
+class Tracker:
+    """One progress bar for a job made of several steps.
+
+    Each step has a rough expected length in seconds (its weight). The bar shows the step,
+    what is being downloaded, the overall percentage and the time left.
+
+    Time left = the rest of the current step (judged from how fast this step is going)
+              + the steps still to come (their expected lengths, corrected by how much
+                faster or slower the finished steps were than expected)."""
+
+    def __init__(self, steps, where=None):
+        import time
+        self.steps = [(k, label, max(float(sec), 1.0)) for k, label, sec in steps]
+        self.total = sum(sec for _, _, sec in self.steps)
+        self.start = time.time()
+        self.bar = (where or st).progress(0.0, text="Starting…")
+        self.last = 0.0
+        self.current, self.step_start = None, time.time()
+        self.finished_est, self.finished_real = 0.0, 0.0
+
+    def update(self, key, frac, message):
+        import time
+        now = time.time()
+        keys = [k for k, _, _ in self.steps]
+        if key not in keys:
+            return
+        n = keys.index(key)
+        if key != self.current:                         # a new step has started
+            if self.current is not None:
+                prev = keys.index(self.current)
+                self.finished_est += self.steps[prev][2]
+                self.finished_real += now - self.step_start
+            self.current, self.step_start = key, now
+        sec = self.steps[n][2]
+        sf = min(max(frac, 0.0), 1.0)
+        done_before = sum(x[2] for x in self.steps[:n])
+        f = max((done_before + sec * sf) / self.total, self.last)    # never go backwards
+        self.last = f
+        step_el = now - self.step_start
+        speed = (self.finished_real / self.finished_est) if self.finished_est > 0 else 1.0
+        speed = min(max(speed, 0.4), 3.0)
+        cur_left = step_el * (1 - sf) / sf if (sf > 0.08 and step_el > 2) else sec * speed * (1 - sf)
+        future = sum(x[2] for x in self.steps[n + 1:]) * speed
+        left_s = cur_left + future
+        left = "almost done" if f >= 0.995 or left_s < 3 else f"{nice_time(left_s)} left"
+        self.bar.progress(f, text=f"Step {n + 1} of {len(self.steps)} · {self.steps[n][1]}: {message} · "
+                                  f"**{f * 100:.0f}%** · {left}")
+
+    def step(self, key):
+        """A progress(fraction, message) function for one step."""
+        return lambda f, m: self.update(key, f, m)
+
+    def empty(self):
+        self.bar.empty()
+
+
 def nice_time(seconds):
-    if seconds < 60:
-        return "under a minute"
-    minutes = round(seconds / 60)
-    return f"about {minutes} minute{'s' if minutes != 1 else ''}"
+    """Plain words for a duration: 'a few seconds', 'about 40 seconds', 'about 3 minutes'."""
+    if seconds < 15:
+        return "a few seconds"
+    if seconds < 50:
+        return f"about {int(round(seconds / 10.0) * 10)} seconds"
+    if seconds < 90:
+        return "about a minute"
+    return f"about {round(seconds / 60)} minutes"
 
 
 def cells_geojson(geom, var):
@@ -507,10 +567,12 @@ def map_section():
                                     "outline. Very big catchments stay at 90 m.")
             if st.button("Trace the catchment", type="primary", width="stretch"):
                 pt = next(s for s in points if s.name == pick)
-                with st.spinner("Downloading the DEM and tracing the flow (one to three minutes)..."):
+                if True:
+                    trk = Tracker([("trace", "Tracing the catchment", 90)])
                     try:
                         tr = C.trace_catchment(pt.geometry.y, pt.geometry.x, max_km=max_km / 2,
-                                               snap_m=float(snap_m), fine=fine)
+                                               snap_m=float(snap_m), fine=fine, say=trk.step("trace"))
+                        trk.empty()
                         name = f"Catchment of {pick}"
                         for p in ss.places:                      # move the point onto the river
                             if p["name"] == pick:
@@ -527,6 +589,7 @@ def map_section():
                                         "the boundary instead." if tr.cut_off else ""))
                         refresh_map_area()
                     except Exception as err:
+                        trk.empty()
                         st.error(f"Could not trace the catchment: {err}")
         msg = ss.pop("trace_msg", None)
         if msg:
@@ -585,13 +648,30 @@ if submitted:
         for p in problems:
             panel.warning(p)
     else:
-        bar = st.progress(0.0, text="Starting")
+        km2_ = A.area_km2(area, epsg)
+        years_ = range(start_year, end_year + 1)
+        todo_ = [(v, y) for v in ("rain", "tmax", "tmin") for y in years_
+                 if not T.is_available(data_dir, v, y, backup_dir)] if want_weather else []
+        steps = []
+        if want_rivers:
+            steps.append(("rivers", "River lines", 8))
+        if want_dem:
+            steps.append(("dem", "Elevation", 8 + km2_ * (0.006 if int(res) == 30 else 0.002)))
+        if want_lu:
+            steps.append(("landuse", "Land use", 10 + km2_ * 0.01))
+        if want_soil:
+            steps.append(("soil", "Soil", 45 + km2_ * 0.01))
+        if want_weather:
+            steps.append(("weather", "Weather", 15 + (sum(1 for v, _ in todo_ if v == "rain") * 20
+                                                      + sum(1 for v, _ in todo_ if v != "rain") * 4) / 3
+                          + (20 if use_power else 0)))
+        steps.append(("report", "Report", 8 + (5 if want_dem or want_lu or want_soil else 0)))
+        trk = Tracker(steps, where=panel)          # right under the "Make my SWAT inputs" button
         files, ms, ws, errors = {}, None, None, []
         try:
-            n_parts = int(want_dem or want_lu or want_soil) + int(want_weather)
             river_lines, river_problem = None, None
             if want_rivers:
-                bar.progress(0.01, text="River lines from OpenStreetMap")
+                trk.update("rivers", 0.1, "asking OpenStreetMap for river lines")
                 try:
                     river_lines = RV.fetch_rivers(area, tuple(river_kinds or ["river"]))
                     if river_lines:
@@ -601,27 +681,20 @@ if submitted:
                         river_problem = "No river lines are mapped in OpenStreetMap for this area."
                 except RV.RiverError as err:
                     river_problem = str(err)
-            done = 0
+                trk.update("rivers", 1.0, f"{len(river_lines or [])} river segments")
             if want_dem or want_lu or want_soil:
-                bar.progress(0.02, text="Making the maps (only the part of each map you need is downloaded)")
                 ms = M.build_maps(area, epsg, int(res), want_dem, want_lu, want_soil, landuse_year=int(lu_year),
                                   crop_code=crop_code, tree_code=tree_code, urban_code=urban_code,
-                                  blank_outside=blank,
-                                  progress=lambda msg: bar.progress(0.05, text=f"Maps: {msg}"))
+                                  blank_outside=blank, progress=lambda stage, f, m: trk.update(stage, f, m))
                 files.update(M.map_files(ms, sites, area))
-                done += 1
             if want_weather:
                 w_sites = [T.Site("Study area", area)] if mode == "grid" else sites
-                start = done / n_parts
-                span = 1 / n_parts
                 ws = S.build_weather(
                     w_sites, datetime.date(start_year, 1, 1), datetime.date(end_year, 12, 31), data_dir,
                     mode=mode, use_power=use_power, wet_mm=float(wet_mm), half_hour_factor=float(hh),
-                    backup_dir=backup_dir,
-                    progress=lambda f, msg: bar.progress(min(max(start + span * f, 0.0), 1.0),
-                                                         text=f"Weather: {msg}"))
+                    backup_dir=backup_dir, progress=trk.step("weather"))
                 files.update(S.weather_files(ws, swat2012=want_2012, swatplus=want_plus))
-            bar.progress(1.0, text="Packing the zip")
+            trk.update("report", 0.1, "writing the README")
             km2 = A.area_km2(area, epsg)
             area_text = (f"{km2:,.1f} km2, UTM zone {epsg - 32600} N (EPSG:{epsg}). Places: "
                          + ", ".join(s.name for s in sites)
@@ -642,24 +715,26 @@ if submitted:
                     "margin": margin or "no margin", "traced": traced[0] if traced else None,
                     "rivers": len(river_lines) if river_lines else None,
                     "traced_res": next((t.res for k, t in ss.traced_obj.items() if k in {s.name for s in sites}), 90)}
-            bar.progress(0.99, text="Checking the data and working out suggestions")
+            trk.update("report", 0.3, "checking the data and working out suggestions")
             tr_obj = next((t for k, t in ss.traced_obj.items() if k in {s.name for s in sites}), None)
             adv = SA.build_advice(ms, ws, sites, river_lines if want_rivers else None, tr_obj)
             files["Report/Setup suggestions.txt"] = SA.advice_text(adv)
             files["Report/Health check.csv"] = adv["health"].to_csv(index=False)
-            bar.progress(1.0, text="Writing the data report")
+            trk.update("report", 0.5, "writing the PDF data report")
             pdf = R.pdf_report(info, sites, area, ms, ws, river_lines, adv)
             files["Report/SWAT Bharat data report.pdf"] = pdf
             files["Report/Methods paragraph.txt"] = R.methods_file(info, ms, ws)
+            trk.update("report", 0.75, "packing the zip and drawing the map previews")
             ss.result = {"ms": ms, "ws": ws, "zip": B.build_zip(files, text), "km2": km2,
                          "previews": {k: M.preview_png(ms, k) for k in ("dem", "landuse", "soil")
                                       if ms is not None and getattr(ms, k) is not None},
                          "overlays": M.overlay_layers(ms) if ms is not None else {},
                          "area": area, "sites": sites, "rivers": river_lines, "river_problem": river_problem,
                          "pdf": pdf, "methods": R.methods_text(info, ms, ws), "advice": adv}
-            bar.empty()
+            trk.update("report", 1.0, "done")
+            trk.empty()
         except Exception as err:
-            bar.empty()
+            trk.empty()
             st.error(f"Something went wrong: {err}")
 
 
