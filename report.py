@@ -43,7 +43,7 @@ REFERENCES = {
     "flw": "Eilander, D., van Verseveld, W., Yamazaki, D., Weerts, A., Winsemius, H. C., and Ward, P. J. "
            "(2021). A hydrography upscaling method for scale-invariant parametrization of distributed "
            "hydrological models. Hydrology and Earth System Sciences, 25, 5287-5313 (pyflwdir).",
-    "app": "Madival, H. P. (2026). SWAT Bharat: SWAT input data preparation for India. "
+    "app": "Madival, H. P. (2026). SWAT Saathi: watershed delineation and SWAT input builder for India. "
            "Built on the IMD Data Puller, https://doi.org/10.5281/zenodo.24352511",
 }
 
@@ -68,8 +68,11 @@ def methods_text(info, ms=None, ws=None):
         tres = info.get("traced_res", 90)
         how = ("the Copernicus 90 m DEM to find its extent and then the 30 m DEM for the final boundary"
                if tres == 30 else "the Copernicus 90 m DEM")
-        area += (f" The catchment boundary was traced from the outlet with D8 flow directions from {how}, "
+        area += (f" The catchment was delineated from the outlet with D8 flow directions from {how}, "
                  f"using pyflwdir (Eilander et al., 2021); {info['traced']}")
+        if info.get("subbasins"):
+            area += (f" With a stream threshold of {info['stream_km2']:g} km², the catchment was divided into "
+                     f"{info['subbasins']} subbasins, one per stream segment.")
         used.append("flw")
     p.append(area)
     if ms is not None:
@@ -118,7 +121,7 @@ def methods_text(info, ms=None, ws=None):
               f"half-hour rainfall was estimated as {hh} times the maximum daily rainfall of each month, "
               f"following the IMD empirical reduction formula P(t) = P(24 h) x (t/24)^(1/3).")
         p.append(w)
-    p.append("All inputs were prepared with SWAT Bharat (Madival, 2026).")
+    p.append("All inputs were prepared with SWAT Saathi (Madival, 2026).")
     refs = sorted({REFERENCES[k] for k in used})
     return " ".join(p), refs
 
@@ -259,7 +262,7 @@ def pdf_report(info, sites, area_wgs84, ms=None, ws=None, rivers=None, adv=None)
     with PdfPages(buf) as pdf:
         # ---------------- page 1: summary and maps ----------------
         fig = plt.figure(figsize=(8.27, 11.69))
-        fig.text(0.06, 0.965, "SWAT Bharat · data report", fontsize=16, weight="bold", color="#1b2a3a")
+        fig.text(0.06, 0.965, "SWAT Saathi · data report", fontsize=16, weight="bold", color="#1b2a3a")
         fig.text(0.06, 0.945, f"Made on {datetime.date.today():%d %B %Y}", fontsize=8, color="#52606d")
         own = info.get("own_km2", info["area_km2"])
         lines = [f"Your area: {own:,.0f} km²  ·  download area: {info['area_km2']:,.0f} km² "

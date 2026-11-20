@@ -1,7 +1,7 @@
 cff-version: 1.2.0
-message: "If you use SWAT Bharat in your work, please cite it as below, and also cite the data sources listed in the README."
+message: "If you use SWAT Saathi in your work, please cite it as below, and also cite the data sources listed in the README."
 type: software
-title: "SWAT Bharat: every SWAT input for any catchment in India (DEM, land use, soil, usersoil and weather for SWAT 2012 and SWAT+)"
+title: "SWAT Saathi: watershed delineation and SWAT input builder for India (catchment, streams, subbasins, DEM, land use, soil, usersoil, lookup tables, IMD weather and weather generator for SWAT 2012 and SWAT+)"
 authors:
   - family-names: Madival
     given-names: Harshit Prakash
@@ -9,6 +9,11 @@ version: 0.1.0
 date-released: 2026-11-19
 license: MIT
 keywords:
+  - SWAT input data
+  - QSWAT
+  - ArcSWAT
+  - watershed delineation
+  - SoilGrids
   - SWAT
   - SWAT+
   - India Meteorological Department

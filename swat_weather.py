@@ -31,7 +31,7 @@ import pandas as pd
 import imd_tools as T
 import power_tools as P
 
-APP_NAME = "SWAT Bharat"
+APP_NAME = "SWAT Saathi"
 MISSING = -99.0          # SWAT (2012 and +) treats -99 as "no value, generate it"
 
 RAIN_COL = T.VARIABLES["rain"]["column"]

@@ -60,7 +60,7 @@ def _ask_servers(q, deadline):
                                  f"Try again in a few minutes with the 'Try river lines again' button.")
             try:
                 r = requests.post(url, data={"data": q}, timeout=min(100, max(10, deadline - time.time())),
-                                  headers={"User-Agent": "SWAT-Bharat (SWAT input tool)"})
+                                  headers={"User-Agent": "SWAT-Saathi (SWAT input tool)"})
                 if r.status_code == 200:
                     return r.json()
                 last = f"busy ({r.status_code})" if r.status_code in (429, 502, 503, 504) else f"error {r.status_code}"

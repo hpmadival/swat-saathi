@@ -1,5 +1,5 @@
 """
-The map side of SWAT Bharat: elevation, land use and soil maps, their lookup
+The map side of SWAT Saathi: elevation, land use and soil maps, their lookup
 tables, and a SWAT soil database (usersoil) for any study area in India.
 
 What this file does, in plain words:
@@ -43,7 +43,7 @@ GDAL_ENV = {
     "VSI_CACHE": "TRUE",
 }
 
-VERSION = "2026-11-19 margin and rivers"   # shown at the bottom of the app, so you can see which version is running
+VERSION = "2026-11-19 three ways and delineation suite"   # shown at the bottom of the app, so you can see which version is running
 
 DEM_NODATA = -9999.0
 SOILGRIDS_URL = ("/vsicurl?max_retry=3&retry_delay=1&list_dir=no&url="
@@ -382,7 +382,7 @@ def _wcs_piece(var, depth, x0, y0, x1, y1, tries=2, timeout=60):
     for attempt in range(tries):
         try:
             r = requests.get(SOILGRIDS_WCS, params=params, timeout=timeout,
-                             headers={"User-Agent": "SWAT-Bharat (SWAT input tool)"})
+                             headers={"User-Agent": "SWAT-Saathi (SWAT input tool)"})
             if r.status_code == 200 and r.content[:4] in (b"II*\x00", b"MM\x00*"):
                 with MemoryFile(r.content) as mf, mf.open() as src:
                     return src.read(1), src.transform, src.crs, src.nodata

@@ -1,5 +1,5 @@
 """
-Packs everything SWAT Bharat made (maps, lookup tables, soil database, weather)
+Packs everything SWAT Saathi made (maps, lookup tables, soil database, weather)
 into one zip, with a README that explains each file and how to load it.
 """
 
@@ -7,7 +7,7 @@ import datetime
 import io
 import zipfile
 
-APP = "SWAT Bharat"
+APP = "SWAT Saathi"
 
 HOW_TO = """HOW TO LOAD IT
 --------------
@@ -102,9 +102,11 @@ def readme(area_text, maps=None, weather=None, today=None):
                 "SWATplus/        ObservedWeather (.cli lists + .pcp .tmp .hmd .slr .wnd files),",
                 "                 WeatherGenerator (CSV files for SWAT+ Editor, weather-wgn.cli)",
                 "CheckTables/     the weather as plain CSV files, to look at in Excel"]
-    out += ["Report/          SWAT Bharat data report.pdf (maps, tables, climate, methods) and",
+    out += ["Report/          SWAT Saathi data report.pdf (maps, tables, climate, methods) and",
             "                 Methods paragraph.txt (ready to paste, with references)",
-            "Maps/rivers.shp  river lines from OpenStreetMap for burning into the DEM (if chosen)"]
+            "Maps/rivers.shp  river lines from OpenStreetMap for burning into the DEM (if chosen)",
+            "Delineation/     (if you delineated a catchment) boundary, outlet, streams, subbasins,",
+            "                 flow grids, subbasin table and catchment numbers"]
     out += ["", HOW_TO, GOOD_TO_KNOW]
     if maps is not None:
         out += ["MAPS", "----"] + [f"{k}: {v}" for k, v in maps.settings.items()]

@@ -1,17 +1,38 @@
-# 🏞️ SWAT Bharat
+# 🏞️ SWAT Saathi: watershed delineation and SWAT input builder for India
 
-**Every SWAT input for any catchment in India, in one zip.**
+**Delineate a watershed and make SWAT input data for any catchment in India in a few minutes:
+catchment, streams and subbasins; DEM, land use, soil (usersoil), lookup tables, weather (IMD rainfall
+and temperature) and the weather generator (WGEN), in one zip.**
 
-A free web app that prepares ready-to-load inputs for **SWAT 2012** (ArcSWAT, QSWAT) and
-**SWAT+** (QSWAT+, SWAT+ Editor). Upload your watershed or subbasins, or drop a point, choose a
-safety margin, press one button, and download one zip.
+SWAT Saathi is a free web app that prepares ready-to-load inputs for **SWAT 2012** (ArcSWAT, QSWAT)
+and **SWAT+** (QSWAT+, SWAT+ Editor). It works in three steps:
+
+1. **Your area**, in one of three ways:
+   - 📍 **Point + area**: a circle or square of the size you choose around a point.
+   - 🗺️ **Your shape**: upload (or draw) your watershed or subbasins, with an optional safety margin.
+   - 🌊 **Delineate**: click your outlet and get the catchment, streams (with Strahler order) and
+     subbasins from the Copernicus DEM, with a threshold slider, a subbasin table (area, elevation,
+     slope, stream length, flows-into), catchment numbers (area, longest flow path, drainage density,
+     shape factors, relief, time of concentration) and flow direction / accumulation grids.
+2. **What to make**: maps, soil, weather and the report.
+3. **Results**: one zip, a PDF report, a health check, suggested SWAT settings and a map viewer.
+
+If you are searching for **how to prepare SWAT input data**, **SWAT weather input files for India**,
+**IMD gridded data for SWAT**, **SWAT usersoil table from SoilGrids**, **land use lookup table for
+QSWAT**, or **how to delineate a watershed for SWAT**, this tool does those steps for you.
+
+> SWAT Saathi is an independent tool. It is not the official SWAT software; SWAT is developed by
+> Texas A&M AgriLife Research and USDA-ARS (https://swat.tamu.edu).
 
 ## Saving you time
 
-- **Trace a catchment from an outlet point:** drop your gauge or outlet on the map and the app traces
-  everything that drains to it (pyflwdir, Deltares): first at 90 m to find the extent (the search square
-  grows until the whole catchment fits), then again at 30 m for a sharp boundary. The point is moved
-  onto the main river nearby.
+- **Delineation suite:** click your outlet and get the catchment (first at 90 m to find the extent,
+  then at 30 m for a sharp boundary), the outlet moved onto the main river, streams with Strahler
+  order and one subbasin per stream segment, numbered from the outlet upstream with "flows into"
+  links (pyflwdir, Deltares). Move the threshold slider to see more or fewer subbasins instantly.
+  Download everything as shapefiles (UTM, for QSWAT / ArcSWAT / QGIS), GeoTIFF flow grids, CSV
+  tables and GeoJSON (for Google Earth). The subbasins can also be used as "one weather station
+  per subbasin".
 - **Health check before SWAT:** empty DEM or land use cells, very flat land (burn-in advice), large water
   bodies, tiny soil types, missing weather days, an incomplete weather generator, a short record, and
   whether the traced outlet moved far. Each item says OK, Check or Fix, and what to do.
@@ -133,3 +154,11 @@ streamlit run app.py
 - OpenStreetMap contributors (river lines, ODbL licence).
 - Eilander, D. et al. (2021). pyflwdir. *HESS* 25, 5287-5313.
 - Madival, H.P. (2026). IMD Data Puller. https://doi.org/10.5281/zenodo.24352511
+
+## Finding this tool (for the GitHub page)
+
+Suggested GitHub "About" description: *Watershed delineation and SWAT input builder for India: catchment,
+streams and subbasins; DEM, land use, soil (usersoil), lookup tables, IMD weather and weather generator
+for SWAT 2012 and SWAT+, in one zip.*
+Suggested topics: `swat` `swat-plus` `qswat` `arcswat` `hydrology` `watershed` `india` `imd`
+`soilgrids` `watershed-delineation` `hydrological-modelling` `streamlit`
